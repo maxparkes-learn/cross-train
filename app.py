@@ -112,14 +112,11 @@ def get_current_user_email():
 
 
 def _get_redirect_url():
-    """Get the OAuth redirect URL from environment or secrets."""
-    url = os.environ.get("REDIRECT_URL")
-    if url:
-        return url
+    """Get the OAuth redirect URL from secrets or environment."""
     try:
         return st.secrets["REDIRECT_URL"]
     except Exception:
-        return "http://localhost:8501"
+        return os.environ.get("REDIRECT_URL", "http://localhost:8501")
 
 
 def login_page():
