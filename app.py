@@ -111,41 +111,52 @@ def get_current_user_email():
 
 
 def login_page():
-    """Render the login page. Blocks access to the rest of the app."""
+    """Render the login page with Google OAuth. Blocks access to the rest of the app."""
+    # Handle OAuth callback — exchange code for session
+    params = st.query_params
+    auth_code = params.get("code")
+
+    if auth_code:
+        try:
+            client = db.get_client()
+            response = client.auth.exchange_code_for_session({"auth_code": auth_code})
+            user_email = response.user.email
+
+            if not user_email.lower().endswith(f"@{ALLOWED_DOMAIN}"):
+                client.auth.sign_out()
+                st.query_params.clear()
+                st.error(f"Access denied. Only @{ALLOWED_DOMAIN} accounts are allowed.")
+                st.stop()
+
+            st.session_state.auth_session = {
+                "user": {
+                    "id": response.user.id,
+                    "email": user_email,
+                },
+                "access_token": response.session.access_token,
+            }
+            st.query_params.clear()
+            st.rerun()
+        except Exception as e:
+            st.query_params.clear()
+            st.error(f"Authentication failed: {e}")
+
     st.title("Rotation & Safety Management System")
-    st.markdown("Sign in to access the scheduler")
+    st.markdown("Sign in with your company Google account to access the scheduler")
 
-    with st.form("login_form"):
-        email = st.text_input("Email")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Sign In", type="primary")
-
-        if submitted:
-            if not email or not password:
-                st.error("Please enter both email and password.")
-            else:
-                try:
-                    client = db.get_client()
-                    response = client.auth.sign_in_with_password({
-                        "email": email,
-                        "password": password,
-                    })
-                    st.session_state.auth_session = {
-                        "user": {
-                            "id": response.user.id,
-                            "email": response.user.email,
-                        },
-                        "access_token": response.session.access_token,
-                    }
-                    st.rerun()
-                except Exception as e:
-                    error_msg = str(e)
-                    if "Invalid login credentials" in error_msg:
-                        st.error("Invalid email or password.")
-                    elif "Email not confirmed" in error_msg:
-                        st.warning("Please check your email and confirm your account before signing in.")
-                    else:
-                        st.error(f"Sign in failed: {error_msg}")
+    try:
+        client = db.get_client()
+        redirect_url = st.secrets.get("REDIRECT_URL", "http://localhost:8501")
+        response = client.auth.sign_in_with_oauth({
+            "provider": "google",
+            "options": {
+                "redirect_to": redirect_url,
+            },
+        })
+        oauth_url = response.url
+        st.link_button("Continue with Google", oauth_url, type="primary")
+    except Exception as e:
+        st.error(f"Could not initialize Google sign-in: {e}")
 
 
 def log_action(action, details=""):
