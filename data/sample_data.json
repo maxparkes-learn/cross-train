@@ -1,0 +1,173 @@
+{
+  "stations": [
+    {
+      "id": "station_001",
+      "name": "Underbody Welding",
+      "required_skill_level": 3,
+      "required_headcount": 2,
+      "required_certification": 2
+    },
+    {
+      "id": "station_002",
+      "name": "Frame Assembly",
+      "required_skill_level": 2,
+      "required_headcount": 3,
+      "required_certification": 1
+    },
+    {
+      "id": "station_003",
+      "name": "Cosmetic Inspection",
+      "required_skill_level": 1,
+      "required_headcount": 2,
+      "required_certification": 0
+    },
+    {
+      "id": "station_004",
+      "name": "Quality Control",
+      "required_skill_level": 2,
+      "required_headcount": 1,
+      "required_certification": 1
+    },
+    {
+      "id": "station_005",
+      "name": "Final Assembly",
+      "required_skill_level": 1,
+      "required_headcount": 4,
+      "required_certification": 0
+    }
+  ],
+  "employees": [
+    {
+      "id": "emp_001",
+      "name": "Alice Chen",
+      "certification_level": 2,
+      "station_competencies": {
+        "station_001": 4,
+        "station_002": 3,
+        "station_003": 2,
+        "station_004": 3,
+        "station_005": 2
+      }
+    },
+    {
+      "id": "emp_002",
+      "name": "Bob Martinez",
+      "certification_level": 2,
+      "station_competencies": {
+        "station_001": 3,
+        "station_002": 4,
+        "station_003": 2,
+        "station_004": 2,
+        "station_005": 1
+      }
+    },
+    {
+      "id": "emp_003",
+      "name": "Carol Johnson",
+      "certification_level": 1,
+      "station_competencies": {
+        "station_001": 1,
+        "station_002": 2,
+        "station_003": 3,
+        "station_004": 2,
+        "station_005": 2
+      }
+    },
+    {
+      "id": "emp_004",
+      "name": "David Kim",
+      "certification_level": 1,
+      "station_competencies": {
+        "station_001": 2,
+        "station_002": 3,
+        "station_003": 1,
+        "station_004": 4,
+        "station_005": 2
+      }
+    },
+    {
+      "id": "emp_005",
+      "name": "Emma Wilson",
+      "certification_level": 1,
+      "station_competencies": {
+        "station_001": 0,
+        "station_002": 2,
+        "station_003": 2,
+        "station_004": 1,
+        "station_005": 3
+      }
+    },
+    {
+      "id": "emp_006",
+      "name": "Frank Brown",
+      "certification_level": 1,
+      "station_competencies": {
+        "station_001": 1,
+        "station_002": 2,
+        "station_003": 1,
+        "station_004": 2,
+        "station_005": 2
+      }
+    },
+    {
+      "id": "emp_007",
+      "name": "Grace Lee",
+      "certification_level": 0,
+      "station_competencies": {
+        "station_001": 0,
+        "station_002": 1,
+        "station_003": 2,
+        "station_004": 1,
+        "station_005": 1
+      }
+    },
+    {
+      "id": "emp_008",
+      "name": "Henry Davis",
+      "certification_level": 0,
+      "station_competencies": {
+        "station_001": 0,
+        "station_002": 1,
+        "station_003": 1,
+        "station_004": 0,
+        "station_005": 2
+      }
+    },
+    {
+      "id": "emp_009",
+      "name": "Ivy Thompson",
+      "certification_level": 0,
+      "station_competencies": {
+        "station_001": 0,
+        "station_002": 0,
+        "station_003": 2,
+        "station_004": 1,
+        "station_005": 1
+      }
+    },
+    {
+      "id": "emp_010",
+      "name": "Jack Garcia",
+      "certification_level": 0,
+      "station_competencies": {
+        "station_001": 0,
+        "station_002": 1,
+        "station_003": 1,
+        "station_004": 0,
+        "station_005": 2
+      }
+    }
+  ],
+  "skill_labels": {
+    "0": "N/A",
+    "1": "General",
+    "2": "Intermediate",
+    "3": "Licensed",
+    "4": "Trainer"
+  },
+  "cert_labels": {
+    "0": "None",
+    "1": "Apprentice",
+    "2": "Licensed Mechanic"
+  }
+}

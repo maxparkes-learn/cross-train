@@ -1,0 +1,9 @@
+.env
+.DS_Store
+__pycache__/
+*.pyc
+.pytest_cache/
+data/current_data.json
+.streamlit/
+!.streamlit/config.toml
+.claude/
