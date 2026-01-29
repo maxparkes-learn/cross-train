@@ -5,7 +5,6 @@ import io
 import os
 from datetime import date, datetime, timedelta
 import streamlit as st
-import streamlit.components.v1 as components
 import pandas as pd
 from pathlib import Path
 import uuid
@@ -121,24 +120,26 @@ def _get_redirect_url():
 
 def login_page():
     """Render the login page with Google OAuth. Blocks access to the rest of the app."""
-    # Inject JS to capture OAuth tokens from URL hash fragment.
+    # JavaScript to capture OAuth hash fragment tokens.
     # Supabase implicit flow redirects back with #access_token=...
-    # Streamlit can't read hash fragments, so JS forwards them as query params.
-    components.html("""
+    # Streamlit can't read hash fragments natively, so JS forwards
+    # the token as a query param for Python to read.
+    # st.html() renders directly in the page (no iframe).
+    st.html("""
     <script>
-    try {
-        const hash = window.parent.location.hash;
-        if (hash && hash.includes('access_token')) {
-            const params = new URLSearchParams(hash.substring(1));
-            const accessToken = params.get('access_token');
-            if (accessToken) {
-                const baseUrl = window.parent.location.href.split('#')[0].split('?')[0];
-                window.parent.location.href = baseUrl + '?access_token=' + encodeURIComponent(accessToken);
+    (function() {
+        var hash = window.location.hash;
+        if (hash && hash.indexOf('access_token') !== -1) {
+            var params = new URLSearchParams(hash.substring(1));
+            var token = params.get('access_token');
+            if (token) {
+                var base = window.location.href.split('#')[0].split('?')[0];
+                window.location.replace(base + '?access_token=' + encodeURIComponent(token));
             }
         }
-    } catch(e) {}
+    })();
     </script>
-    """, height=0)
+    """)
 
     # Handle token from query params (forwarded by JS above)
     access_token = st.query_params.get("access_token")
@@ -178,6 +179,7 @@ def login_page():
             f"{supabase_url}/auth/v1/authorize"
             f"?provider=google"
             f"&redirect_to={redirect_url}"
+            f"&flow_type=implicit"
         )
         st.link_button("Continue with Google", oauth_url, type="primary")
     except Exception as e:
