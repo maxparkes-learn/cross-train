@@ -49,7 +49,19 @@ CREATE INDEX idx_assignment_logs_date ON assignment_logs (log_date DESC);
 CREATE INDEX idx_assignment_logs_employee ON assignment_logs (employee_id, log_date DESC);
 CREATE INDEX idx_assignment_logs_station ON assignment_logs (station_id, log_date DESC);
 
+-- Audit logs (track user changes)
+CREATE TABLE audit_logs (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  timestamp TIMESTAMPTZ DEFAULT NOW(),
+  user_email TEXT NOT NULL,
+  action TEXT NOT NULL,
+  details TEXT
+);
+
+CREATE INDEX idx_audit_logs_timestamp ON audit_logs (timestamp DESC);
+
 -- Enable Row Level Security (optional but recommended)
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE employees ENABLE ROW LEVEL SECURITY;
 ALTER TABLE competencies ENABLE ROW LEVEL SECURITY;
@@ -76,6 +88,11 @@ CREATE POLICY "Allow anonymous read" ON assignment_logs FOR SELECT USING (true);
 CREATE POLICY "Allow anonymous insert" ON assignment_logs FOR INSERT WITH CHECK (true);
 CREATE POLICY "Allow anonymous update" ON assignment_logs FOR UPDATE USING (true);
 CREATE POLICY "Allow anonymous delete" ON assignment_logs FOR DELETE USING (true);
+
+CREATE POLICY "Allow anonymous read" ON audit_logs FOR SELECT USING (true);
+CREATE POLICY "Allow anonymous insert" ON audit_logs FOR INSERT WITH CHECK (true);
+CREATE POLICY "Allow anonymous update" ON audit_logs FOR UPDATE USING (true);
+CREATE POLICY "Allow anonymous delete" ON audit_logs FOR DELETE USING (true);
 
 CREATE POLICY "Allow anonymous read" ON settings FOR SELECT USING (true);
 CREATE POLICY "Allow anonymous insert" ON settings FOR INSERT WITH CHECK (true);

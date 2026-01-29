@@ -97,6 +97,109 @@ def generate_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
 
+ADMIN_EMAIL = "max.parkes@clutch.ca"
+ALLOWED_DOMAIN = "clutch.ca"
+
+
+def get_current_user_email():
+    """Get email of the signed-in user from auth session."""
+    session = st.session_state.get("auth_session")
+    if session and isinstance(session, dict):
+        user = session.get("user", {})
+        return user.get("email", "unknown")
+    return "local"
+
+
+def login_page():
+    """Render the login/register page. Blocks access to the rest of the app."""
+    st.title("Rotation & Safety Management System")
+    st.markdown("Sign in to access the scheduler")
+
+    tab_login, tab_register = st.tabs(["Sign In", "Register"])
+
+    with tab_login:
+        with st.form("login_form"):
+            email = st.text_input("Email", key="login_email")
+            password = st.text_input("Password", type="password", key="login_password")
+            submitted = st.form_submit_button("Sign In", type="primary")
+
+            if submitted:
+                if not email or not password:
+                    st.error("Please enter both email and password.")
+                else:
+                    try:
+                        client = db.get_client()
+                        response = client.auth.sign_in_with_password({
+                            "email": email,
+                            "password": password,
+                        })
+                        st.session_state.auth_session = {
+                            "user": {
+                                "id": response.user.id,
+                                "email": response.user.email,
+                            },
+                            "access_token": response.session.access_token,
+                        }
+                        st.rerun()
+                    except Exception as e:
+                        error_msg = str(e)
+                        if "Invalid login credentials" in error_msg:
+                            st.error("Invalid email or password.")
+                        elif "Email not confirmed" in error_msg:
+                            st.warning("Please check your email and confirm your account before signing in.")
+                        else:
+                            st.error(f"Sign in failed: {error_msg}")
+
+    with tab_register:
+        with st.form("register_form"):
+            new_email = st.text_input("Email", key="register_email")
+            new_password = st.text_input("Password", type="password", key="register_password")
+            confirm_password = st.text_input("Confirm Password", type="password", key="register_confirm")
+            registered = st.form_submit_button("Register", type="primary")
+
+            if registered:
+                if not new_email or not new_password:
+                    st.error("Please fill in all fields.")
+                elif not new_email.lower().endswith(f"@{ALLOWED_DOMAIN}"):
+                    st.error(f"Only @{ALLOWED_DOMAIN} email addresses can register.")
+                elif new_password != confirm_password:
+                    st.error("Passwords do not match.")
+                elif len(new_password) < 6:
+                    st.error("Password must be at least 6 characters.")
+                else:
+                    try:
+                        client = db.get_client()
+                        response = client.auth.sign_up({
+                            "email": new_email,
+                            "password": new_password,
+                        })
+                        if response.user and response.user.identities:
+                            st.success("Account created! You can now sign in.")
+                        else:
+                            st.warning("Check your email to confirm your account, then sign in.")
+                    except Exception as e:
+                        st.error(f"Registration failed: {e}")
+
+
+def log_action(action, details=""):
+    """Write an audit log entry for the current user."""
+    email = get_current_user_email()
+    if SUPABASE_ENABLED:
+        try:
+            db.insert_audit_log(email, action, details)
+        except Exception:
+            pass  # Don't break the app if audit table doesn't exist yet
+    # Also append to session state for immediate display
+    if "audit_logs" not in st.session_state:
+        st.session_state.audit_logs = []
+    st.session_state.audit_logs.insert(0, {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "user": email,
+        "action": action,
+        "details": details,
+    })
+
+
 def auto_save():
     """Auto-save current data (no-op when using Supabase - saves happen immediately)."""
     if SUPABASE_ENABLED:
@@ -241,6 +344,14 @@ def init_session_state():
     if "override_mode" not in st.session_state:
         st.session_state.override_mode = False
 
+    if "audit_logs" not in st.session_state:
+        st.session_state.audit_logs = []
+        if SUPABASE_ENABLED:
+            try:
+                st.session_state.audit_logs = db.fetch_audit_logs(limit=50)
+            except Exception:
+                pass  # Table may not exist yet
+
 
 def render_sidebar():
     """Render sidebar with management controls."""
@@ -251,6 +362,17 @@ def render_sidebar():
     cert_options = get_cert_options()
 
     with st.sidebar:
+        # === SIGNED-IN USER & LOGOUT ===
+        user_email = get_current_user_email()
+        col_user, col_logout = st.columns([3, 1])
+        with col_user:
+            st.caption(f"Signed in as **{user_email}**")
+        with col_logout:
+            if st.button("Logout", key="logout_btn"):
+                st.session_state.auth_session = None
+                st.rerun()
+        st.divider()
+
         st.header("Manage Data")
 
         # === SETTINGS SECTION ===
@@ -270,6 +392,7 @@ def render_sidebar():
                 st.session_state.skill_labels = updated_skill_labels
                 save_skill_labels()
                 auto_save()
+                log_action("Updated competency labels")
                 st.success("Competency labels saved!")
                 st.rerun()
 
@@ -290,6 +413,7 @@ def render_sidebar():
                 st.session_state.cert_labels = updated_cert_labels
                 save_cert_labels()
                 auto_save()
+                log_action("Updated certification labels")
                 st.success("Certification labels saved!")
                 st.rerun()
 
@@ -320,6 +444,7 @@ def render_sidebar():
                 st.session_state.competency_colors = updated_colors
                 save_competency_colors()
                 auto_save()
+                log_action("Updated competency colors")
                 st.success("Competency colors saved!")
                 st.rerun()
 
@@ -332,6 +457,7 @@ def render_sidebar():
                 save_cert_labels()
                 save_competency_colors()
                 auto_save()
+                log_action("Reset all settings to defaults")
                 st.rerun()
 
         # === EMPLOYEES SECTION ===
@@ -360,6 +486,7 @@ def render_sidebar():
 
                 with col2:
                     if st.button("Remove", type="secondary", key="remove_emp_btn"):
+                        removed_name = scheduler.employees[selected_emp[0]].name
                         if SUPABASE_ENABLED:
                             db.delete_employee(selected_emp[0])
                         del scheduler.employees[selected_emp[0]]
@@ -370,6 +497,7 @@ def render_sidebar():
                                 assignment.assigned_employee_ids.remove(selected_emp[0])
                         st.session_state.schedule_generated = False
                         auto_save()
+                        log_action("Removed employee", removed_name)
                         st.rerun()
 
         # === STATIONS SECTION ===
@@ -412,6 +540,7 @@ def render_sidebar():
                         db.upsert_station(new_station.to_dict())
                     st.session_state.schedule_generated = False
                     auto_save()
+                    log_action("Added station", new_station_name.strip())
                     st.rerun()
                 else:
                     st.error("Please enter a station name")
@@ -481,10 +610,12 @@ def render_sidebar():
                                 db.upsert_station(station.to_dict())
                             st.session_state.schedule_generated = False
                             auto_save()
+                            log_action("Updated station", edited_station_name.strip())
                             st.rerun()
 
                     with col2:
                         if st.button("Remove", type="secondary", key="remove_station_btn"):
+                            removed_station_name = scheduler.stations[selected_station[0]].name
                             if SUPABASE_ENABLED:
                                 db.delete_station(selected_station[0])
                             for emp in scheduler.employees.values():
@@ -495,6 +626,7 @@ def render_sidebar():
                                 del scheduler.assignments[selected_station[0]]
                             st.session_state.schedule_generated = False
                             auto_save()
+                            log_action("Removed station", removed_station_name)
                             st.rerun()
 
         # === IMPORT/EXPORT ===
@@ -519,6 +651,7 @@ def render_sidebar():
                         st.session_state.competency_colors = loaded_colors
                     st.session_state.schedule_generated = False
                     auto_save()
+                    log_action("Loaded sample data")
                     st.rerun()
 
             st.divider()
@@ -545,6 +678,7 @@ def render_sidebar():
                         st.session_state.competency_colors = loaded_colors
                     st.session_state.schedule_generated = False
                     auto_save()
+                    log_action("Uploaded JSON data file")
                     st.success("Data loaded!")
                     st.rerun()
                 except Exception as e:
@@ -567,6 +701,23 @@ def render_sidebar():
                     file_name="scheduler_data.json",
                     mime="application/json",
                 )
+
+        # === ACTIVITY LOG (admin only) ===
+        if get_current_user_email() == ADMIN_EMAIL:
+            with st.expander("Activity Log", expanded=False):
+                audit_logs = st.session_state.get("audit_logs", [])
+                if audit_logs:
+                    for entry in audit_logs[:50]:
+                        ts = entry.get("timestamp", "")
+                        user = entry.get("user_email", entry.get("user", ""))
+                        action = entry.get("action", "")
+                        details = entry.get("details", "")
+                        # Show compact user (just the part before @)
+                        short_user = user.split("@")[0] if "@" in user else user
+                        detail_str = f" — {details}" if details else ""
+                        st.caption(f"**{ts}** · {short_user} · {action}{detail_str}")
+                else:
+                    st.caption("No activity recorded yet.")
 
 
 def render_add_employee_form():
@@ -635,6 +786,7 @@ def render_add_employee_form():
                 st.session_state.adding_employee = False
                 st.session_state.schedule_generated = False
                 auto_save()
+                log_action("Added employee", new_name.strip())
                 st.rerun()
             else:
                 st.error("Please enter a name")
@@ -712,6 +864,7 @@ def render_edit_employee_form():
             st.session_state.editing_employee = None
             st.session_state.schedule_generated = False
             auto_save()
+            log_action("Updated employee", edited_name.strip())
             st.rerun()
 
     with col2:
@@ -824,6 +977,7 @@ def display_cross_training_matrix():
                     assignment.unfilled_slots += 1
                     assignment.is_fully_staffed = False
             st.session_state.schedule_generated = False
+            log_action("Marked absent", scheduler.employees[emp_id].name)
             st.rerun()
         elif not was_present and is_now_present:
             # Mark as present
@@ -832,6 +986,7 @@ def display_cross_training_matrix():
             if SUPABASE_ENABLED:
                 db.update_employee_absence(emp_id, False)
             st.session_state.schedule_generated = False
+            log_action("Marked present", scheduler.employees[emp_id].name)
             st.rerun()
 
     # Show station requirements
@@ -1024,6 +1179,7 @@ def schedule_section():
             scheduler.generate_schedule(scenario=scenario)
             st.session_state.schedule_generated = True
             st.session_state.active_scenario = scenario_name
+            log_action("Generated schedule", scenario_name)
             st.rerun()
 
     st.caption(f"**{scenario_name}:** {MatrixScheduler.SCENARIO_DESCRIPTIONS[scenario_name]}")
@@ -1186,6 +1342,7 @@ def schedule_section():
                 )
 
                 st.session_state.override_mode = False
+                log_action("Manually adjusted assignments")
                 st.success("Assignments updated.")
                 st.rerun()
     else:
@@ -1368,6 +1525,7 @@ def schedule_section():
                     existing_keys.add(key)
 
             auto_save()
+            log_action("Finalized day", f"{len(new_logs)} assignments for {log_date_str}")
             st.success(f"Finalized {len(new_logs)} assignments for {log_date_str}")
     else:
         st.info("No assignments to finalize. Generate a schedule first.")
@@ -1558,6 +1716,13 @@ def rotation_dashboard():
 
 def main():
     """Main application entry point."""
+    if "auth_session" not in st.session_state:
+        st.session_state.auth_session = None
+
+    if st.session_state.auth_session is None:
+        login_page()
+        st.stop()
+
     st.title("Rotation & Safety Management System")
     st.markdown("Assign employees to manufacturing stations based on competencies, certifications, and rotation history")
 

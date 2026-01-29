@@ -181,6 +181,31 @@ def delete_assignment_logs_by_date(log_date: str) -> None:
     client.table("assignment_logs").delete().eq("log_date", log_date).execute()
 
 
+# --- Audit Logs ---
+
+def insert_audit_log(user_email: str, action: str, details: str = "") -> None:
+    """Insert an audit log entry."""
+    client = get_client()
+    client.table("audit_logs").insert({
+        "user_email": user_email,
+        "action": action,
+        "details": details,
+    }).execute()
+
+
+def fetch_audit_logs(limit: int = 50) -> List[dict]:
+    """Fetch recent audit logs, newest first."""
+    client = get_client()
+    response = (
+        client.table("audit_logs")
+        .select("*")
+        .order("timestamp", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return response.data
+
+
 # --- Bulk Operations ---
 
 def load_all_data() -> dict:
