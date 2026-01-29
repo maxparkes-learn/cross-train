@@ -3,6 +3,9 @@
 import json
 import io
 import os
+import secrets
+import hashlib
+import base64
 from datetime import date, datetime, timedelta
 import streamlit as st
 import pandas as pd
@@ -110,50 +113,84 @@ def get_current_user_email():
     return "local"
 
 
+def _generate_pkce_pair():
+    """Generate a PKCE code_verifier and code_challenge pair."""
+    code_verifier = secrets.token_urlsafe(64)
+    digest = hashlib.sha256(code_verifier.encode()).digest()
+    code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+    return code_verifier, code_challenge
+
+
+def _get_redirect_url():
+    """Get the OAuth redirect URL from environment or secrets."""
+    url = os.environ.get("REDIRECT_URL")
+    if url:
+        return url
+    try:
+        return st.secrets["REDIRECT_URL"]
+    except Exception:
+        return "http://localhost:8501"
+
+
 def login_page():
     """Render the login page with Google OAuth. Blocks access to the rest of the app."""
     # Handle OAuth callback — exchange code for session
-    params = st.query_params
-    auth_code = params.get("code")
+    auth_code = st.query_params.get("code")
 
     if auth_code:
-        try:
-            client = db.get_client()
-            response = client.auth.exchange_code_for_session({"auth_code": auth_code})
-            user_email = response.user.email
+        code_verifier = st.session_state.get("pkce_verifier")
+        if not code_verifier:
+            st.query_params.clear()
+            st.error("Session expired. Please try signing in again.")
+        else:
+            try:
+                client = db.get_client()
+                response = client.auth.exchange_code_for_session({
+                    "auth_code": auth_code,
+                    "code_verifier": code_verifier,
+                })
+                user_email = response.user.email
 
-            if not user_email.lower().endswith(f"@{ALLOWED_DOMAIN}"):
-                client.auth.sign_out()
+                if not user_email.lower().endswith(f"@{ALLOWED_DOMAIN}"):
+                    client.auth.sign_out()
+                    st.query_params.clear()
+                    st.session_state.pop("pkce_verifier", None)
+                    st.error(f"Access denied. Only @{ALLOWED_DOMAIN} accounts are allowed.")
+                    st.stop()
+
+                st.session_state.auth_session = {
+                    "user": {
+                        "id": response.user.id,
+                        "email": user_email,
+                    },
+                    "access_token": response.session.access_token,
+                }
+                st.session_state.pop("pkce_verifier", None)
                 st.query_params.clear()
-                st.error(f"Access denied. Only @{ALLOWED_DOMAIN} accounts are allowed.")
-                st.stop()
-
-            st.session_state.auth_session = {
-                "user": {
-                    "id": response.user.id,
-                    "email": user_email,
-                },
-                "access_token": response.session.access_token,
-            }
-            st.query_params.clear()
-            st.rerun()
-        except Exception as e:
-            st.query_params.clear()
-            st.error(f"Authentication failed: {e}")
+                st.rerun()
+            except Exception as e:
+                st.query_params.clear()
+                st.error(f"Authentication failed: {e}")
+        return
 
     st.title("Rotation & Safety Management System")
     st.markdown("Sign in with your company Google account to access the scheduler")
 
     try:
-        client = db.get_client()
-        redirect_url = st.secrets.get("REDIRECT_URL", "http://localhost:8501")
-        response = client.auth.sign_in_with_oauth({
-            "provider": "google",
-            "options": {
-                "redirect_to": redirect_url,
-            },
-        })
-        oauth_url = response.url
+        # Generate PKCE pair and store verifier in session
+        code_verifier, code_challenge = _generate_pkce_pair()
+        st.session_state.pkce_verifier = code_verifier
+
+        supabase_url = os.environ.get("SUPABASE_URL", "")
+        redirect_url = _get_redirect_url()
+
+        oauth_url = (
+            f"{supabase_url}/auth/v1/authorize"
+            f"?provider=google"
+            f"&redirect_to={redirect_url}"
+            f"&code_challenge={code_challenge}"
+            f"&code_challenge_method=S256"
+        )
         st.link_button("Continue with Google", oauth_url, type="primary")
     except Exception as e:
         st.error(f"Could not initialize Google sign-in: {e}")
