@@ -4,6 +4,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 data/current_data.json
-.streamlit/
+.streamlit/*
 !.streamlit/config.toml
 .claude/

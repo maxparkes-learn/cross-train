@@ -1,0 +1,5 @@
+[server]
+enableStaticServing = false
+
+[client]
+showErrorDetails = false
