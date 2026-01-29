@@ -111,74 +111,41 @@ def get_current_user_email():
 
 
 def login_page():
-    """Render the login/register page. Blocks access to the rest of the app."""
+    """Render the login page. Blocks access to the rest of the app."""
     st.title("Rotation & Safety Management System")
     st.markdown("Sign in to access the scheduler")
 
-    tab_login, tab_register = st.tabs(["Sign In", "Register"])
+    with st.form("login_form"):
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Sign In", type="primary")
 
-    with tab_login:
-        with st.form("login_form"):
-            email = st.text_input("Email", key="login_email")
-            password = st.text_input("Password", type="password", key="login_password")
-            submitted = st.form_submit_button("Sign In", type="primary")
-
-            if submitted:
-                if not email or not password:
-                    st.error("Please enter both email and password.")
-                else:
-                    try:
-                        client = db.get_client()
-                        response = client.auth.sign_in_with_password({
-                            "email": email,
-                            "password": password,
-                        })
-                        st.session_state.auth_session = {
-                            "user": {
-                                "id": response.user.id,
-                                "email": response.user.email,
-                            },
-                            "access_token": response.session.access_token,
-                        }
-                        st.rerun()
-                    except Exception as e:
-                        error_msg = str(e)
-                        if "Invalid login credentials" in error_msg:
-                            st.error("Invalid email or password.")
-                        elif "Email not confirmed" in error_msg:
-                            st.warning("Please check your email and confirm your account before signing in.")
-                        else:
-                            st.error(f"Sign in failed: {error_msg}")
-
-    with tab_register:
-        with st.form("register_form"):
-            new_email = st.text_input("Email", key="register_email")
-            new_password = st.text_input("Password", type="password", key="register_password")
-            confirm_password = st.text_input("Confirm Password", type="password", key="register_confirm")
-            registered = st.form_submit_button("Register", type="primary")
-
-            if registered:
-                if not new_email or not new_password:
-                    st.error("Please fill in all fields.")
-                elif not new_email.lower().endswith(f"@{ALLOWED_DOMAIN}"):
-                    st.error(f"Only @{ALLOWED_DOMAIN} email addresses can register.")
-                elif new_password != confirm_password:
-                    st.error("Passwords do not match.")
-                elif len(new_password) < 6:
-                    st.error("Password must be at least 6 characters.")
-                else:
-                    try:
-                        client = db.get_client()
-                        response = client.auth.sign_up({
-                            "email": new_email,
-                            "password": new_password,
-                        })
-                        if response.user and response.user.identities:
-                            st.success("Account created! You can now sign in.")
-                        else:
-                            st.warning("Check your email to confirm your account, then sign in.")
-                    except Exception as e:
-                        st.error(f"Registration failed: {e}")
+        if submitted:
+            if not email or not password:
+                st.error("Please enter both email and password.")
+            else:
+                try:
+                    client = db.get_client()
+                    response = client.auth.sign_in_with_password({
+                        "email": email,
+                        "password": password,
+                    })
+                    st.session_state.auth_session = {
+                        "user": {
+                            "id": response.user.id,
+                            "email": response.user.email,
+                        },
+                        "access_token": response.session.access_token,
+                    }
+                    st.rerun()
+                except Exception as e:
+                    error_msg = str(e)
+                    if "Invalid login credentials" in error_msg:
+                        st.error("Invalid email or password.")
+                    elif "Email not confirmed" in error_msg:
+                        st.warning("Please check your email and confirm your account before signing in.")
+                    else:
+                        st.error(f"Sign in failed: {error_msg}")
 
 
 def log_action(action, details=""):
