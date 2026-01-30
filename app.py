@@ -717,6 +717,19 @@ def render_sidebar():
 
         # === ACTIVITY LOG (admin only) ===
         if get_current_user_email() == ADMIN_EMAIL:
+            with st.expander("Reset Data", expanded=False):
+                st.caption("Permanently delete all assignment logs (station hours history).")
+                confirm_reset = st.checkbox("I confirm I want to reset all hours", key="confirm_reset_hours")
+                if st.button("Reset All Hours", type="secondary", key="reset_hours_btn", disabled=not confirm_reset):
+                    try:
+                        db.delete_all_assignment_logs()
+                    except Exception:
+                        pass
+                    st.session_state.scheduler.assignment_logs = []
+                    log_action("Reset all assignment hours")
+                    st.success("All assignment hours have been reset.")
+                    st.rerun()
+
             with st.expander("Activity Log", expanded=False):
                 audit_logs = st.session_state.get("audit_logs", [])
                 if audit_logs:

@@ -181,6 +181,12 @@ def delete_assignment_logs_by_date(log_date: str) -> None:
     client.table("assignment_logs").delete().eq("log_date", log_date).execute()
 
 
+def delete_all_assignment_logs() -> None:
+    """Delete all assignment logs."""
+    client = get_client()
+    client.table("assignment_logs").delete().neq("id", 0).execute()
+
+
 # --- Audit Logs ---
 
 def insert_audit_log(user_email: str, action: str, details: str = "") -> None:
