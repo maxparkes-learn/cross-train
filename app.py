@@ -1961,10 +1961,24 @@ def activity_log_page():
         st.info("No activity recorded yet.")
         return
 
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    toronto_tz = ZoneInfo("America/Toronto")
+
     log_data = []
     for entry in audit_logs:
+        raw_ts = entry.get("timestamp", "")
+        if raw_ts:
+            try:
+                dt = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+                dt_toronto = dt.astimezone(toronto_tz)
+                ts_display = dt_toronto.strftime("%b %d, %Y %I:%M %p")
+            except Exception:
+                ts_display = raw_ts
+        else:
+            ts_display = ""
         log_data.append({
-            "Timestamp": entry.get("timestamp", ""),
+            "Timestamp": ts_display,
             "User": entry.get("user_email", entry.get("user", "")),
             "Action": entry.get("action", ""),
             "Details": entry.get("details", ""),
