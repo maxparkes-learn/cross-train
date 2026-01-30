@@ -137,6 +137,11 @@ def login_page():
                 "grant_type": "authorization_code",
             },
         )
+        if token_response.status_code != 200:
+            st.query_params.clear()
+            st.error(f"Token exchange failed (HTTP {token_response.status_code}): {token_response.text}")
+            st.stop()
+
         token_data = token_response.json()
 
         if "error" in token_data:
