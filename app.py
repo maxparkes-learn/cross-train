@@ -748,20 +748,6 @@ def render_sidebar():
                     st.success("All assignment hours have been reset.")
                     st.rerun()
 
-            with st.expander("Activity Log", expanded=False):
-                audit_logs = st.session_state.get("audit_logs", [])
-                if audit_logs:
-                    for entry in audit_logs[:50]:
-                        ts = entry.get("timestamp", "")
-                        user = entry.get("user_email", entry.get("user", ""))
-                        action = entry.get("action", "")
-                        details = entry.get("details", "")
-                        # Show compact user (just the part before @)
-                        short_user = user.split("@")[0] if "@" in user else user
-                        detail_str = f" — {details}" if details else ""
-                        st.caption(f"**{ts}** · {short_user} · {action}{detail_str}")
-                else:
-                    st.caption("No activity recorded yet.")
 
 
 def render_add_employee_form():
@@ -1966,6 +1952,28 @@ def rotation_dashboard():
         st.info("No cross-training sessions recorded in this date range.")
 
 
+def activity_log_page():
+    """Display the activity log as a table (admin only)."""
+    st.header("Activity Log")
+
+    audit_logs = st.session_state.get("audit_logs", [])
+    if not audit_logs:
+        st.info("No activity recorded yet.")
+        return
+
+    log_data = []
+    for entry in audit_logs:
+        log_data.append({
+            "Timestamp": entry.get("timestamp", ""),
+            "User": entry.get("user_email", entry.get("user", "")),
+            "Action": entry.get("action", ""),
+            "Details": entry.get("details", ""),
+        })
+
+    df = pd.DataFrame(log_data)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+
 def main():
     """Main application entry point."""
     if "auth_session" not in st.session_state:
@@ -1989,7 +1997,11 @@ def main():
         render_edit_employee_form()
         st.divider()
 
-    tab1, tab2, tab3 = st.tabs(["Cross-Training Matrix", "Schedule", "Rotation Dashboard"])
+    if get_current_user_email() == ADMIN_EMAIL:
+        tab1, tab2, tab3, tab4 = st.tabs(["Cross-Training Matrix", "Schedule", "Rotation Dashboard", "Activity Log"])
+    else:
+        tab1, tab2, tab3 = st.tabs(["Cross-Training Matrix", "Schedule", "Rotation Dashboard"])
+        tab4 = None
 
     with tab1:
         display_cross_training_matrix()
@@ -1999,6 +2011,10 @@ def main():
 
     with tab3:
         rotation_dashboard()
+
+    if tab4 is not None:
+        with tab4:
+            activity_log_page()
 
 
 if __name__ == "__main__":
