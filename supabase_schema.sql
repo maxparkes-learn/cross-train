@@ -49,6 +49,22 @@ CREATE INDEX idx_assignment_logs_date ON assignment_logs (log_date DESC);
 CREATE INDEX idx_assignment_logs_employee ON assignment_logs (employee_id, log_date DESC);
 CREATE INDEX idx_assignment_logs_station ON assignment_logs (station_id, log_date DESC);
 
+-- Cross-training logs (trainer-trainee session tracking)
+CREATE TABLE cross_training_logs (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  log_date DATE NOT NULL,
+  trainer_id TEXT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  trainee_id TEXT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  station_id TEXT NOT NULL REFERENCES stations(id) ON DELETE CASCADE,
+  hours NUMERIC(4,1) NOT NULL DEFAULT 8.0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (log_date, trainer_id, trainee_id, station_id)
+);
+
+CREATE INDEX idx_cross_training_date ON cross_training_logs (log_date DESC);
+CREATE INDEX idx_cross_training_trainer ON cross_training_logs (trainer_id, log_date DESC);
+CREATE INDEX idx_cross_training_trainee ON cross_training_logs (trainee_id, log_date DESC);
+
 -- Audit logs (track user changes)
 CREATE TABLE audit_logs (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -62,6 +78,7 @@ CREATE INDEX idx_audit_logs_timestamp ON audit_logs (timestamp DESC);
 
 -- Enable Row Level Security (optional but recommended)
 ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cross_training_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE employees ENABLE ROW LEVEL SECURITY;
 ALTER TABLE competencies ENABLE ROW LEVEL SECURITY;
@@ -88,6 +105,11 @@ CREATE POLICY "Allow anonymous read" ON assignment_logs FOR SELECT USING (true);
 CREATE POLICY "Allow anonymous insert" ON assignment_logs FOR INSERT WITH CHECK (true);
 CREATE POLICY "Allow anonymous update" ON assignment_logs FOR UPDATE USING (true);
 CREATE POLICY "Allow anonymous delete" ON assignment_logs FOR DELETE USING (true);
+
+CREATE POLICY "Allow anonymous read" ON cross_training_logs FOR SELECT USING (true);
+CREATE POLICY "Allow anonymous insert" ON cross_training_logs FOR INSERT WITH CHECK (true);
+CREATE POLICY "Allow anonymous update" ON cross_training_logs FOR UPDATE USING (true);
+CREATE POLICY "Allow anonymous delete" ON cross_training_logs FOR DELETE USING (true);
 
 CREATE POLICY "Allow anonymous read" ON audit_logs FOR SELECT USING (true);
 CREATE POLICY "Allow anonymous insert" ON audit_logs FOR INSERT WITH CHECK (true);

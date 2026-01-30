@@ -187,6 +187,35 @@ def delete_all_assignment_logs() -> None:
     client.table("assignment_logs").delete().neq("id", 0).execute()
 
 
+# --- Cross-Training Logs ---
+
+def upsert_cross_training_logs(logs: List[dict]) -> List[dict]:
+    """Bulk upsert cross-training logs."""
+    if not logs:
+        return []
+    client = get_client()
+    response = client.table("cross_training_logs").upsert(
+        logs, on_conflict="log_date,trainer_id,trainee_id,station_id"
+    ).execute()
+    return response.data
+
+
+def fetch_all_cross_training_logs(since_date: Optional[str] = None) -> List[dict]:
+    """Get all cross-training logs, optionally since a date."""
+    client = get_client()
+    query = client.table("cross_training_logs").select("*").order("log_date", desc=True)
+    if since_date:
+        query = query.gte("log_date", since_date)
+    response = query.execute()
+    return response.data
+
+
+def delete_all_cross_training_logs() -> None:
+    """Delete all cross-training logs."""
+    client = get_client()
+    client.table("cross_training_logs").delete().neq("id", 0).execute()
+
+
 # --- Audit Logs ---
 
 def insert_audit_log(user_email: str, action: str, details: str = "") -> None:
@@ -222,8 +251,11 @@ def load_all_data() -> dict:
     try:
         assignment_logs = fetch_all_assignment_logs()
     except Exception:
-        # Table may not exist yet if migration hasn't been run
         assignment_logs = []
+    try:
+        cross_training_logs = fetch_all_cross_training_logs()
+    except Exception:
+        cross_training_logs = []
     skill_labels = fetch_setting("skill_labels")
     cert_labels = fetch_setting("cert_labels")
     competency_colors = fetch_setting("competency_colors")
@@ -244,6 +276,7 @@ def load_all_data() -> dict:
         "stations": stations,
         "employees": employees,
         "assignment_logs": assignment_logs,
+        "cross_training_logs": cross_training_logs,
         "skill_labels": skill_labels,
         "cert_labels": cert_labels,
         "competency_colors": competency_colors,

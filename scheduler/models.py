@@ -138,6 +138,35 @@ class AssignmentLog:
 
 
 @dataclass
+class CrossTrainingLog:
+    """A historical record of a cross-training session."""
+    log_date: str  # "YYYY-MM-DD"
+    trainer_id: str
+    trainee_id: str
+    station_id: str
+    hours: float = 8.0
+
+    def to_dict(self) -> dict:
+        return {
+            "log_date": self.log_date,
+            "trainer_id": self.trainer_id,
+            "trainee_id": self.trainee_id,
+            "station_id": self.station_id,
+            "hours": self.hours,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CrossTrainingLog":
+        return cls(
+            log_date=data["log_date"],
+            trainer_id=data["trainer_id"],
+            trainee_id=data["trainee_id"],
+            station_id=data["station_id"],
+            hours=float(data.get("hours", 8.0)),
+        )
+
+
+@dataclass
 class RotationStats:
     """Computed rotation statistics for an employee-station pair (not persisted)."""
     employee_id: str

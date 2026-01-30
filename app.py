@@ -22,6 +22,7 @@ from scheduler import (
     Employee,
     SkillLevel,
     AssignmentLog,
+    CrossTrainingLog,
     RotationStats,
     ScenarioWeights,
     load_all,
@@ -288,6 +289,11 @@ def init_session_state():
                         AssignmentLog.from_dict(log_data)
                     )
 
+                # Load cross-training logs
+                st.session_state.cross_training_logs = [
+                    CrossTrainingLog.from_dict(ct) for ct in data.get("cross_training_logs", [])
+                ]
+
                 # Set absent employees from is_absent flag
                 for e in data.get("employees", []):
                     if e.get("is_absent", False):
@@ -356,6 +362,12 @@ def init_session_state():
 
     if "override_mode" not in st.session_state:
         st.session_state.override_mode = False
+
+    if "cross_training_logs" not in st.session_state:
+        st.session_state.cross_training_logs = []
+
+    if "cross_training_assignments" not in st.session_state:
+        st.session_state.cross_training_assignments = []
 
     if "audit_logs" not in st.session_state:
         st.session_state.audit_logs = []
@@ -725,8 +737,14 @@ def render_sidebar():
                         db.delete_all_assignment_logs()
                     except Exception:
                         pass
+                    try:
+                        db.delete_all_cross_training_logs()
+                    except Exception:
+                        pass
                     st.session_state.scheduler.assignment_logs = []
-                    log_action("Reset all assignment hours")
+                    st.session_state.cross_training_logs = []
+                    st.session_state.cross_training_assignments = []
+                    log_action("Reset all assignment and cross-training hours")
                     st.success("All assignment hours have been reset.")
                     st.rerun()
 
@@ -1385,14 +1403,14 @@ def schedule_section():
     unassigned_ids = present_employees - assigned_ids
 
     if unassigned_ids:
-        st.subheader("Unassigned Employees - Training Recommendations")
-        st.caption("These employees are present but not assigned to any station")
+        st.subheader("Cross-Training Assignments")
+        st.caption("Assign unassigned employees to train on-line staff at their station")
 
         # Build recommendations for all unassigned employees
         employees_with_recs = []
         employees_without_recs = []
 
-        for emp_id in unassigned_ids:
+        for emp_id in sorted(unassigned_ids):
             emp = scheduler.employees[emp_id]
             cert_label = cert_labels.get(emp.certification_level, "?")
 
@@ -1402,9 +1420,7 @@ def schedule_section():
                 station = scheduler.stations[station_id]
                 trainer_competency = emp.get_competency(station_id)
 
-                # Only consider if the unassigned employee has some competency at this station
                 if trainer_competency > 0:
-                    # Find assigned employees with lower competency
                     for assigned_id in assignment.assigned_employee_ids:
                         if assigned_id in scheduler.employees:
                             assigned_emp = scheduler.employees[assigned_id]
@@ -1412,31 +1428,88 @@ def schedule_section():
 
                             if trainer_competency > assigned_competency:
                                 training_recommendations.append({
-                                    "station": station.name,
-                                    "trainee": assigned_emp.name,
+                                    "station_id": station_id,
+                                    "station_name": station.name,
+                                    "trainee_id": assigned_id,
+                                    "trainee_name": assigned_emp.name,
                                     "trainee_level": assigned_competency,
                                     "trainer_level": trainer_competency,
                                 })
 
             if training_recommendations:
-                employees_with_recs.append((emp, cert_label, training_recommendations))
+                employees_with_recs.append((emp, emp_id, cert_label, training_recommendations))
             else:
                 employees_without_recs.append((emp, cert_label))
 
-        # Display employees with recommendations first (in expanders)
-        for emp, cert_label, recs in employees_with_recs:
+        # Interactive assignment for each unassigned employee with recommendations
+        for emp, emp_id, cert_label, recs in employees_with_recs:
             with st.expander(f"**{emp.name}** ({cert_label})", expanded=True):
-                rec_data = []
+                # Build selectbox options from recommendations
+                options = ["— Not assigned —"]
+                option_data = [None]
                 for rec in recs:
-                    rec_data.append({
-                        "Station": rec["station"],
-                        "Can Train": rec["trainee"],
-                        "Trainee Level": f"{rec['trainee_level']} - {skill_labels.get(rec['trainee_level'], '?')}",
-                        "Trainer Level": f"{rec['trainer_level']} - {skill_labels.get(rec['trainer_level'], '?')}",
-                    })
-                st.dataframe(pd.DataFrame(rec_data), use_container_width=True, hide_index=True)
+                    label = (
+                        f"Train {rec['trainee_name']} at {rec['station_name']} "
+                        f"(Trainee: {skill_labels.get(rec['trainee_level'], '?')} → "
+                        f"Trainer: {skill_labels.get(rec['trainer_level'], '?')})"
+                    )
+                    options.append(label)
+                    option_data.append(rec)
 
-        # Display employees without recommendations as simple lines
+                # Check if this trainer already has a cross-training assignment
+                current_idx = 0
+                for ct in st.session_state.cross_training_assignments:
+                    if ct["trainer_id"] == emp_id:
+                        for i, od in enumerate(option_data):
+                            if od and od["trainee_id"] == ct["trainee_id"] and od["station_id"] == ct["station_id"]:
+                                current_idx = i
+                                break
+
+                selection = st.selectbox(
+                    f"Assign {emp.name} to cross-train:",
+                    range(len(options)),
+                    format_func=lambda x: options[x],
+                    index=current_idx,
+                    key=f"ct_assign_{emp_id}",
+                )
+
+                if selection > 0:
+                    selected = option_data[selection]
+                    # Update cross-training assignments in session state
+                    # Remove any existing assignment for this trainer
+                    st.session_state.cross_training_assignments = [
+                        ct for ct in st.session_state.cross_training_assignments
+                        if ct["trainer_id"] != emp_id
+                    ]
+                    st.session_state.cross_training_assignments.append({
+                        "trainer_id": emp_id,
+                        "trainer_name": emp.name,
+                        "trainee_id": selected["trainee_id"],
+                        "trainee_name": selected["trainee_name"],
+                        "station_id": selected["station_id"],
+                        "station_name": selected["station_name"],
+                    })
+                else:
+                    # Remove assignment for this trainer
+                    st.session_state.cross_training_assignments = [
+                        ct for ct in st.session_state.cross_training_assignments
+                        if ct["trainer_id"] != emp_id
+                    ]
+
+        # Show current cross-training assignments summary
+        active_ct = st.session_state.cross_training_assignments
+        if active_ct:
+            st.markdown("**Active Cross-Training Pairings:**")
+            ct_summary = []
+            for ct in active_ct:
+                ct_summary.append({
+                    "Trainer": ct["trainer_name"],
+                    "Trainee": ct["trainee_name"],
+                    "Station": ct["station_name"],
+                })
+            st.dataframe(pd.DataFrame(ct_summary), use_container_width=True, hide_index=True)
+
+        # Display employees without recommendations
         if employees_without_recs:
             st.markdown("**No possible pairings:**")
             for emp, cert_label in employees_without_recs:
@@ -1482,21 +1555,54 @@ def schedule_section():
                 "_station_id": station_id,
             })
 
-    if finalize_rows:
-        finalize_df = pd.DataFrame(finalize_rows)
-        edited_finalize = st.data_editor(
-            finalize_df[["Employee", "Station", "Hours"]],
-            column_config={
-                "Employee": st.column_config.TextColumn("Employee", disabled=True),
-                "Station": st.column_config.TextColumn("Station", disabled=True),
-                "Hours": st.column_config.NumberColumn(
-                    "Hours", min_value=0.5, max_value=24.0, step=0.5
-                ),
-            },
-            use_container_width=True,
-            hide_index=True,
-            key="finalize_editor",
-        )
+    # Build cross-training finalize rows
+    ct_finalize_rows = []
+    for ct in st.session_state.cross_training_assignments:
+        ct_finalize_rows.append({
+            "Trainer": ct["trainer_name"],
+            "Trainee": ct["trainee_name"],
+            "Station": ct["station_name"],
+            "Hours": default_hours,
+            "_trainer_id": ct["trainer_id"],
+            "_trainee_id": ct["trainee_id"],
+            "_station_id": ct["station_id"],
+        })
+
+    if finalize_rows or ct_finalize_rows:
+        if finalize_rows:
+            st.markdown("**Station Assignments**")
+            finalize_df = pd.DataFrame(finalize_rows)
+            edited_finalize = st.data_editor(
+                finalize_df[["Employee", "Station", "Hours"]],
+                column_config={
+                    "Employee": st.column_config.TextColumn("Employee", disabled=True),
+                    "Station": st.column_config.TextColumn("Station", disabled=True),
+                    "Hours": st.column_config.NumberColumn(
+                        "Hours", min_value=0.5, max_value=24.0, step=0.5
+                    ),
+                },
+                use_container_width=True,
+                hide_index=True,
+                key="finalize_editor",
+            )
+
+        if ct_finalize_rows:
+            st.markdown("**Cross-Training Sessions**")
+            ct_finalize_df = pd.DataFrame(ct_finalize_rows)
+            edited_ct_finalize = st.data_editor(
+                ct_finalize_df[["Trainer", "Trainee", "Station", "Hours"]],
+                column_config={
+                    "Trainer": st.column_config.TextColumn("Trainer", disabled=True),
+                    "Trainee": st.column_config.TextColumn("Trainee", disabled=True),
+                    "Station": st.column_config.TextColumn("Station", disabled=True),
+                    "Hours": st.column_config.NumberColumn(
+                        "Hours", min_value=0.5, max_value=24.0, step=0.5
+                    ),
+                },
+                use_container_width=True,
+                hide_index=True,
+                key="ct_finalize_editor",
+            )
 
         btn_col1, btn_col2 = st.columns([1, 1])
         with btn_col1:
@@ -1516,9 +1622,11 @@ def schedule_section():
 
         if finalize_clicked:
             log_date_str = finalize_date.strftime("%Y-%m-%d")
+
+            # Save regular assignment logs
             new_logs = []
             for idx, row in enumerate(finalize_rows):
-                hours = float(edited_finalize.iloc[idx]["Hours"])
+                hours = float(edited_finalize.iloc[idx]["Hours"]) if finalize_rows else default_hours
                 new_logs.append(AssignmentLog(
                     log_date=log_date_str,
                     employee_id=row["_employee_id"],
@@ -1526,14 +1634,13 @@ def schedule_section():
                     hours=hours,
                 ))
 
-            # Persist to Supabase
-            if SUPABASE_ENABLED:
+            if SUPABASE_ENABLED and new_logs:
                 try:
                     db.upsert_assignment_logs([log.to_dict() for log in new_logs])
                 except Exception as e:
-                    st.warning(f"Could not save to Supabase (table may not exist yet): {e}")
+                    st.warning(f"Could not save assignment logs: {e}")
 
-            # Merge into scheduler's in-memory logs (dedup by date/emp/station)
+            # Merge into scheduler's in-memory logs
             existing_keys = set()
             for log in scheduler.assignment_logs:
                 existing_keys.add((log.log_date, log.employee_id, log.station_id))
@@ -1541,7 +1648,6 @@ def schedule_section():
             for log in new_logs:
                 key = (log.log_date, log.employee_id, log.station_id)
                 if key in existing_keys:
-                    # Update existing entry
                     for i, existing in enumerate(scheduler.assignment_logs):
                         if (existing.log_date, existing.employee_id, existing.station_id) == key:
                             scheduler.assignment_logs[i] = log
@@ -1550,9 +1656,45 @@ def schedule_section():
                     scheduler.assignment_logs.append(log)
                     existing_keys.add(key)
 
+            # Save cross-training logs
+            new_ct_logs = []
+            for idx, row in enumerate(ct_finalize_rows):
+                hours = float(edited_ct_finalize.iloc[idx]["Hours"]) if ct_finalize_rows else default_hours
+                new_ct_logs.append(CrossTrainingLog(
+                    log_date=log_date_str,
+                    trainer_id=row["_trainer_id"],
+                    trainee_id=row["_trainee_id"],
+                    station_id=row["_station_id"],
+                    hours=hours,
+                ))
+
+            if SUPABASE_ENABLED and new_ct_logs:
+                try:
+                    db.upsert_cross_training_logs([ct.to_dict() for ct in new_ct_logs])
+                except Exception as e:
+                    st.warning(f"Could not save cross-training logs: {e}")
+
+            # Merge into session state cross-training logs
+            ct_existing_keys = set()
+            for ct in st.session_state.cross_training_logs:
+                ct_existing_keys.add((ct.log_date, ct.trainer_id, ct.trainee_id, ct.station_id))
+
+            for ct in new_ct_logs:
+                key = (ct.log_date, ct.trainer_id, ct.trainee_id, ct.station_id)
+                if key in ct_existing_keys:
+                    for i, existing in enumerate(st.session_state.cross_training_logs):
+                        if (existing.log_date, existing.trainer_id, existing.trainee_id, existing.station_id) == key:
+                            st.session_state.cross_training_logs[i] = ct
+                            break
+                else:
+                    st.session_state.cross_training_logs.append(ct)
+                    ct_existing_keys.add(key)
+
+            total = len(new_logs) + len(new_ct_logs)
             auto_save()
-            log_action("Finalized day", f"{len(new_logs)} assignments for {log_date_str}")
-            st.success(f"Finalized {len(new_logs)} assignments for {log_date_str}")
+            ct_detail = f", {len(new_ct_logs)} cross-training" if new_ct_logs else ""
+            log_action("Finalized day", f"{len(new_logs)} assignments{ct_detail} for {log_date_str}")
+            st.success(f"Finalized {total} entries for {log_date_str} ({len(new_logs)} assignments, {len(new_ct_logs)} cross-training)")
     else:
         st.info("No assignments to finalize. Generate a schedule first.")
 
@@ -1738,6 +1880,82 @@ def rotation_dashboard():
         mime="application/pdf",
         key="download_rotation_pdf_btn",
     )
+
+    # --- Cross-Training Hours Summary ---
+    ct_logs = st.session_state.get("cross_training_logs", [])
+    start_str = start_date.strftime("%Y-%m-%d")
+    filtered_ct = [ct for ct in ct_logs if ct.log_date >= start_str]
+
+    if filtered_ct:
+        st.divider()
+        st.subheader("Cross-Training Hours")
+
+        # Build summary tables
+        trainer_hours = {}  # trainer_id -> {station_id -> {total_hours, trainee_names}}
+        trainee_hours = {}  # trainee_id -> {station_id -> total_hours}
+
+        for ct in filtered_ct:
+            # Trainer summary
+            if ct.trainer_id not in trainer_hours:
+                trainer_hours[ct.trainer_id] = {}
+            if ct.station_id not in trainer_hours[ct.trainer_id]:
+                trainer_hours[ct.trainer_id][ct.station_id] = {"hours": 0.0, "trainees": set()}
+            trainer_hours[ct.trainer_id][ct.station_id]["hours"] += ct.hours
+            trainer_hours[ct.trainer_id][ct.station_id]["trainees"].add(ct.trainee_id)
+
+            # Trainee summary
+            if ct.trainee_id not in trainee_hours:
+                trainee_hours[ct.trainee_id] = {}
+            if ct.station_id not in trainee_hours[ct.trainee_id]:
+                trainee_hours[ct.trainee_id][ct.station_id] = 0.0
+            trainee_hours[ct.trainee_id][ct.station_id] += ct.hours
+
+        # Trainer table: hours delivered
+        st.markdown("**Hours Delivered (by Trainer)**")
+        trainer_data = []
+        for trainer_id, stations in trainer_hours.items():
+            trainer = scheduler.employees.get(trainer_id)
+            if not trainer:
+                continue
+            total = sum(s["hours"] for s in stations.values())
+            station_details = []
+            for sid, info in stations.items():
+                sname = scheduler.stations[sid].name if sid in scheduler.stations else sid
+                trainee_names = ", ".join(
+                    scheduler.employees[tid].name for tid in info["trainees"] if tid in scheduler.employees
+                )
+                station_details.append(f"{sname}: {info['hours']}h ({trainee_names})")
+            trainer_data.append({
+                "Trainer": trainer.name,
+                "Total Hours": total,
+                "Details": " | ".join(station_details),
+            })
+        if trainer_data:
+            st.dataframe(pd.DataFrame(trainer_data), use_container_width=True, hide_index=True)
+
+        # Trainee table: hours received
+        st.markdown("**Hours Received (by Trainee)**")
+        trainee_data = []
+        for trainee_id, stations in trainee_hours.items():
+            trainee = scheduler.employees.get(trainee_id)
+            if not trainee:
+                continue
+            total = sum(stations.values())
+            station_details = []
+            for sid, hours in stations.items():
+                sname = scheduler.stations[sid].name if sid in scheduler.stations else sid
+                station_details.append(f"{sname}: {hours}h")
+            trainee_data.append({
+                "Trainee": trainee.name,
+                "Total Hours": total,
+                "Stations": " | ".join(station_details),
+            })
+        if trainee_data:
+            st.dataframe(pd.DataFrame(trainee_data), use_container_width=True, hide_index=True)
+    else:
+        st.divider()
+        st.subheader("Cross-Training Hours")
+        st.info("No cross-training sessions recorded in this date range.")
 
 
 def main():

@@ -1,6 +1,6 @@
 """Cross-Training Matrix Scheduler package."""
 
-from .models import Station, Employee, Assignment, SkillLevel, AssignmentLog, RotationStats, ScenarioWeights
+from .models import Station, Employee, Assignment, SkillLevel, AssignmentLog, CrossTrainingLog, RotationStats, ScenarioWeights
 from .scheduler import MatrixScheduler
 from .loader import load_stations, load_employees, load_all, save_schedule_state, load_schedule_state
 
@@ -9,6 +9,7 @@ __all__ = [
     "Employee",
     "Assignment",
     "AssignmentLog",
+    "CrossTrainingLog",
     "RotationStats",
     "ScenarioWeights",
     "SkillLevel",
