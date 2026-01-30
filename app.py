@@ -3,11 +3,13 @@
 import json
 import io
 import os
+import requests as http_requests
 from datetime import date, datetime, timedelta
 import streamlit as st
 import pandas as pd
 from pathlib import Path
 import uuid
+from urllib.parse import urlencode
 from dotenv import load_dotenv
 from fpdf import FPDF
 
@@ -110,44 +112,46 @@ def get_current_user_email():
     return "local"
 
 
-def _get_redirect_url():
-    """Get the OAuth redirect URL from secrets or environment."""
+def _get_secret(key, default=""):
+    """Get a secret from st.secrets or environment variables."""
     try:
-        return st.secrets["REDIRECT_URL"]
+        return st.secrets[key]
     except Exception:
-        return os.environ.get("REDIRECT_URL", "http://localhost:8501")
+        return os.environ.get(key, default)
 
 
 def login_page():
     """Render the login page with Google OAuth. Blocks access to the rest of the app."""
-    # JavaScript to capture OAuth hash fragment tokens.
-    # Supabase implicit flow redirects back with #access_token=...
-    # Streamlit can't read hash fragments natively, so JS forwards
-    # the token as a query param for Python to read.
-    # st.html() renders directly in the page (no iframe).
-    st.html("""
-    <script>
-    (function() {
-        var hash = window.location.hash;
-        if (hash && hash.indexOf('access_token') !== -1) {
-            var params = new URLSearchParams(hash.substring(1));
-            var token = params.get('access_token');
-            if (token) {
-                var base = window.location.href.split('#')[0].split('?')[0];
-                window.location.replace(base + '?access_token=' + encodeURIComponent(token));
-            }
-        }
-    })();
-    </script>
-    """)
-
-    # Handle token from query params (forwarded by JS above)
-    access_token = st.query_params.get("access_token")
-    if access_token:
+    # Handle OAuth callback — Google returns ?code=... as a query param
+    auth_code = st.query_params.get("code")
+    if auth_code:
         try:
-            client = db.get_client()
-            user_response = client.auth.get_user(access_token)
-            user_email = user_response.user.email
+            redirect_url = _get_secret("REDIRECT_URL", "http://localhost:8501")
+            # Exchange authorization code for tokens via Google's token endpoint
+            token_response = http_requests.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "code": auth_code,
+                    "client_id": _get_secret("GOOGLE_CLIENT_ID"),
+                    "client_secret": _get_secret("GOOGLE_CLIENT_SECRET"),
+                    "redirect_uri": redirect_url,
+                    "grant_type": "authorization_code",
+                },
+            )
+            token_data = token_response.json()
+
+            if "error" in token_data:
+                st.query_params.clear()
+                st.error(f"Authentication failed: {token_data.get('error_description', token_data['error'])}")
+                st.stop()
+
+            # Get user info from Google
+            userinfo_response = http_requests.get(
+                "https://www.googleapis.com/oauth2/v2/userinfo",
+                headers={"Authorization": f"Bearer {token_data['access_token']}"},
+            )
+            user_info = userinfo_response.json()
+            user_email = user_info.get("email", "")
 
             if not user_email.lower().endswith(f"@{ALLOWED_DOMAIN}"):
                 st.query_params.clear()
@@ -156,10 +160,10 @@ def login_page():
 
             st.session_state.auth_session = {
                 "user": {
-                    "id": user_response.user.id,
+                    "id": user_info.get("id", ""),
                     "email": user_email,
                 },
-                "access_token": access_token,
+                "access_token": token_data["access_token"],
             }
             st.query_params.clear()
             st.rerun()
@@ -171,19 +175,17 @@ def login_page():
     st.title("Rotation & Safety Management System")
     st.markdown("Sign in with your company Google account to access the scheduler")
 
-    try:
-        supabase_url = os.environ.get("SUPABASE_URL", "")
-        redirect_url = _get_redirect_url()
-
-        oauth_url = (
-            f"{supabase_url}/auth/v1/authorize"
-            f"?provider=google"
-            f"&redirect_to={redirect_url}"
-            f"&flow_type=implicit"
-        )
-        st.link_button("Continue with Google", oauth_url, type="primary")
-    except Exception as e:
-        st.error(f"Could not initialize Google sign-in: {e}")
+    redirect_url = _get_secret("REDIRECT_URL", "http://localhost:8501")
+    params = urlencode({
+        "client_id": _get_secret("GOOGLE_CLIENT_ID"),
+        "redirect_uri": redirect_url,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "access_type": "offline",
+        "prompt": "select_account",
+    })
+    oauth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{params}"
+    st.link_button("Continue with Google", oauth_url, type="primary")
 
 
 def log_action(action, details=""):
