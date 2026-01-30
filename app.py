@@ -1441,13 +1441,21 @@ def schedule_section():
             else:
                 employees_without_recs.append((emp, cert_label))
 
+        # Build map of trainees already claimed by a trainer
+        claimed_trainees = {}
+        for ct in st.session_state.cross_training_assignments:
+            claimed_trainees[ct["trainee_id"]] = ct["trainer_id"]
+
         # Interactive assignment for each unassigned employee with recommendations
         for emp, emp_id, cert_label, recs in employees_with_recs:
             with st.expander(f"**{emp.name}** ({cert_label})", expanded=True):
-                # Build selectbox options from recommendations
+                # Build selectbox options, excluding trainees claimed by other trainers
                 options = ["— Not assigned —"]
                 option_data = [None]
                 for rec in recs:
+                    claimed_by = claimed_trainees.get(rec["trainee_id"])
+                    if claimed_by and claimed_by != emp_id:
+                        continue  # Trainee already assigned to a different trainer
                     label = (
                         f"Train {rec['trainee_name']} at {rec['station_name']} "
                         f"(Trainee: {skill_labels.get(rec['trainee_level'], '?')} → "
