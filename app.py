@@ -125,52 +125,53 @@ def login_page():
     # Handle OAuth callback — Google returns ?code=... as a query param
     auth_code = st.query_params.get("code")
     if auth_code:
-        try:
-            redirect_url = _get_secret("REDIRECT_URL", "http://localhost:8501")
-            # Exchange authorization code for tokens via Google's token endpoint
-            token_response = http_requests.post(
-                "https://oauth2.googleapis.com/token",
-                data={
-                    "code": auth_code,
-                    "client_id": _get_secret("GOOGLE_CLIENT_ID"),
-                    "client_secret": _get_secret("GOOGLE_CLIENT_SECRET"),
-                    "redirect_uri": redirect_url,
-                    "grant_type": "authorization_code",
-                },
-            )
-            token_data = token_response.json()
+        redirect_url = _get_secret("REDIRECT_URL", "http://localhost:8501")
+        # Exchange authorization code for tokens via Google's token endpoint
+        token_response = http_requests.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code": auth_code,
+                "client_id": _get_secret("GOOGLE_CLIENT_ID"),
+                "client_secret": _get_secret("GOOGLE_CLIENT_SECRET"),
+                "redirect_uri": redirect_url,
+                "grant_type": "authorization_code",
+            },
+        )
+        token_data = token_response.json()
 
-            if "error" in token_data:
-                st.query_params.clear()
-                st.error(f"Authentication failed: {token_data.get('error_description', token_data['error'])}")
-                st.stop()
-
-            # Get user info from Google
-            userinfo_response = http_requests.get(
-                "https://www.googleapis.com/oauth2/v2/userinfo",
-                headers={"Authorization": f"Bearer {token_data['access_token']}"},
-            )
-            user_info = userinfo_response.json()
-            user_email = user_info.get("email", "")
-
-            if not user_email.lower().endswith(f"@{ALLOWED_DOMAIN}"):
-                st.query_params.clear()
-                st.error(f"Access denied. Only @{ALLOWED_DOMAIN} accounts are allowed.")
-                st.stop()
-
-            st.session_state.auth_session = {
-                "user": {
-                    "id": user_info.get("id", ""),
-                    "email": user_email,
-                },
-                "access_token": token_data["access_token"],
-            }
+        if "error" in token_data:
             st.query_params.clear()
-            st.rerun()
-        except Exception as e:
+            st.error(f"Token exchange failed: {token_data.get('error_description', token_data['error'])}")
+            st.stop()
+
+        # Get user info from Google
+        userinfo_response = http_requests.get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {token_data['access_token']}"},
+        )
+
+        if userinfo_response.status_code != 200:
             st.query_params.clear()
-            st.error(f"Authentication failed: {e}")
-        return
+            st.error(f"Failed to get user info (HTTP {userinfo_response.status_code}): {userinfo_response.text}")
+            st.stop()
+
+        user_info = userinfo_response.json()
+        user_email = user_info.get("email", "")
+
+        if not user_email.lower().endswith(f"@{ALLOWED_DOMAIN}"):
+            st.query_params.clear()
+            st.error(f"Access denied. Only @{ALLOWED_DOMAIN} accounts are allowed.")
+            st.stop()
+
+        st.session_state.auth_session = {
+            "user": {
+                "id": user_info.get("id", ""),
+                "email": user_email,
+            },
+            "access_token": token_data["access_token"],
+        }
+        st.query_params.clear()
+        st.rerun()
 
     st.title("Rotation & Safety Management System")
     st.markdown("Sign in with your company Google account to access the scheduler")
