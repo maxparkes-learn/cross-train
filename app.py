@@ -377,12 +377,6 @@ def init_session_state():
     if "schedule_generated" not in st.session_state:
         st.session_state.schedule_generated = False
 
-    if "adding_employee" not in st.session_state:
-        st.session_state.adding_employee = False
-
-    if "editing_employee" not in st.session_state:
-        st.session_state.editing_employee = None
-
     if "override_mode" not in st.session_state:
         st.session_state.override_mode = False
 
@@ -509,44 +503,9 @@ def render_sidebar():
                 st.rerun()
 
         # === EMPLOYEES SECTION ===
-        with st.expander("👥 Employees", expanded=True):
-            if st.button("+ Add New Employee", type="primary", key="start_add_emp"):
-                st.session_state.adding_employee = True
-                st.session_state.editing_employee = None
-
-            if scheduler.employees:
-                st.divider()
-                st.subheader("Edit / Remove")
-
-                emp_list = [(e.id, e.name) for e in scheduler.employees.values()]
-                selected_emp = st.selectbox(
-                    "Select Employee",
-                    options=emp_list,
-                    format_func=lambda x: x[1],
-                    key="edit_emp_select",
-                )
-
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("Edit", key="edit_emp_btn"):
-                        st.session_state.editing_employee = selected_emp[0]
-                        st.session_state.adding_employee = False
-
-                with col2:
-                    if st.button("Remove", type="secondary", key="remove_emp_btn"):
-                        removed_name = scheduler.employees[selected_emp[0]].name
-                        if SUPABASE_ENABLED:
-                            db.delete_employee(selected_emp[0])
-                        del scheduler.employees[selected_emp[0]]
-                        scheduler.available_employees.discard(selected_emp[0])
-                        scheduler.absent_employees.discard(selected_emp[0])
-                        for assignment in scheduler.assignments.values():
-                            if selected_emp[0] in assignment.assigned_employee_ids:
-                                assignment.assigned_employee_ids.remove(selected_emp[0])
-                        st.session_state.schedule_generated = False
-                        auto_save()
-                        log_action("Removed employee", removed_name)
-                        st.rerun()
+        with st.expander("👥 Employees", expanded=False):
+            st.caption("Add, edit, and remove employees directly in the Cross-Training Matrix table.")
+            st.caption(f"**{len(scheduler.employees)}** employees total")
 
         # === STATIONS SECTION ===
         with st.expander("🏭 Stations", expanded=True):
@@ -773,159 +732,6 @@ def render_sidebar():
 
 
 
-def render_add_employee_form():
-    """Render form to add a new employee with station competencies."""
-    scheduler = st.session_state.scheduler
-    skill_labels = get_skill_labels()
-    skill_options = get_skill_options()
-    cert_labels = get_cert_labels()
-    cert_options = get_cert_options()
-
-    st.subheader("Add New Employee")
-
-    if not scheduler.stations:
-        st.warning("Please add stations first before adding employees.")
-        if st.button("Cancel"):
-            st.session_state.adding_employee = False
-            st.rerun()
-        return
-
-    new_name = st.text_input("Employee Name", key="new_emp_name_form")
-
-    new_cert = st.selectbox(
-        "Certification Level",
-        options=cert_options,
-        format_func=lambda x: f"{x[0]} - {x[1]}",
-        key="new_emp_cert",
-    )
-
-    st.write("**Rate competency for each station (0-4):**")
-
-    competencies = {}
-    cols = st.columns(min(3, len(scheduler.stations)))
-
-    for idx, station in enumerate(scheduler.stations.values()):
-        col_idx = idx % len(cols)
-        with cols[col_idx]:
-            level = st.selectbox(
-                f"{station.name}",
-                options=skill_options,
-                format_func=lambda x: f"{x[0]} - {x[1]}",
-                key=f"new_emp_comp_{station.id}",
-            )
-            competencies[station.id] = level[0]
-
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Save Employee", type="primary"):
-            if new_name.strip():
-                new_id = generate_id("emp")
-                new_employee = Employee(
-                    id=new_id,
-                    name=new_name.strip(),
-                    station_competencies=competencies,
-                    certification_level=new_cert[0],
-                )
-                scheduler.employees[new_id] = new_employee
-                scheduler.available_employees.add(new_id)
-                if SUPABASE_ENABLED:
-                    db.upsert_employee({
-                        "id": new_id,
-                        "name": new_name.strip(),
-                        "certification_level": new_cert[0],
-                        "is_absent": False,
-                    })
-                    db.upsert_competencies(new_id, competencies)
-                st.session_state.adding_employee = False
-                st.session_state.schedule_generated = False
-                auto_save()
-                log_action("Added employee", new_name.strip())
-                st.rerun()
-            else:
-                st.error("Please enter a name")
-
-    with col2:
-        if st.button("Cancel"):
-            st.session_state.adding_employee = False
-            st.rerun()
-
-
-def render_edit_employee_form():
-    """Render form to edit an existing employee's competencies."""
-    scheduler = st.session_state.scheduler
-    skill_labels = get_skill_labels()
-    skill_options = get_skill_options()
-    cert_labels = get_cert_labels()
-    cert_options = get_cert_options()
-    emp_id = st.session_state.editing_employee
-
-    if emp_id not in scheduler.employees:
-        st.session_state.editing_employee = None
-        st.rerun()
-        return
-
-    employee = scheduler.employees[emp_id]
-
-    st.subheader(f"Edit Employee: {employee.name}")
-
-    edited_name = st.text_input("Employee Name", value=employee.name, key=f"edit_emp_name_form_{emp_id}")
-
-    current_cert_idx = [i for i, opt in enumerate(cert_options) if opt[0] == employee.certification_level]
-    edited_cert = st.selectbox(
-        "Certification Level",
-        options=cert_options,
-        format_func=lambda x: f"{x[0]} - {x[1]}",
-        index=current_cert_idx[0] if current_cert_idx else 0,
-        key=f"edit_emp_cert_{emp_id}",
-    )
-
-    st.write("**Update competency for each station (0-4):**")
-
-    competencies = {}
-    cols = st.columns(min(3, max(1, len(scheduler.stations))))
-
-    for idx, station in enumerate(scheduler.stations.values()):
-        col_idx = idx % len(cols)
-        current_level = employee.get_competency(station.id)
-        current_idx = [i for i, opt in enumerate(skill_options) if opt[0] == current_level]
-
-        with cols[col_idx]:
-            level = st.selectbox(
-                f"{station.name}",
-                options=skill_options,
-                format_func=lambda x: f"{x[0]} - {x[1]}",
-                index=current_idx[0] if current_idx else 0,
-                key=f"edit_emp_comp_{emp_id}_{station.id}",
-            )
-            competencies[station.id] = level[0]
-
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Save Changes", type="primary"):
-            employee.name = edited_name.strip()
-            employee.certification_level = edited_cert[0]
-            employee.station_competencies = competencies
-            if SUPABASE_ENABLED:
-                is_absent = emp_id in scheduler.absent_employees
-                db.upsert_employee({
-                    "id": emp_id,
-                    "name": edited_name.strip(),
-                    "certification_level": edited_cert[0],
-                    "is_absent": is_absent,
-                })
-                db.upsert_competencies(emp_id, competencies)
-            st.session_state.editing_employee = None
-            st.session_state.schedule_generated = False
-            auto_save()
-            log_action("Updated employee", edited_name.strip())
-            st.rerun()
-
-    with col2:
-        if st.button("Cancel"):
-            st.session_state.editing_employee = None
-            st.rerun()
-
-
 def display_cross_training_matrix():
     """Display the cross-training matrix showing all employees and their station competencies."""
     scheduler = st.session_state.scheduler
@@ -954,93 +760,197 @@ def display_cross_training_matrix():
         st.info("No stations. Add some in the sidebar →")
         return
 
-    if not scheduler.employees:
-        st.info("No employees. Add some in the sidebar →")
-        return
-
-    # Competency level indicators (colored squares)
-    level_indicators = {
-        0: "⬜",  # White - N/A
-        1: "🟥",  # Red - needs attention
-        2: "🟧",  # Orange - developing
-        3: "🟨",  # Yellow - competent
-        4: "🟩",  # Green - trainer
-    }
+    # Build dropdown options for skill levels and certifications
+    skill_options = [f"{i} - {skill_labels[i]}" for i in range(5)]
+    cert_options = [f"{i} - {cert_labels[i]}" for i in range(3)]
 
     # Build matrix data with employee IDs for tracking
     matrix_data = []
     emp_ids = []
-    for idx, emp in enumerate(scheduler.employees.values(), start=1):
+    for emp in scheduler.employees.values():
         emp_ids.append(emp.id)
         is_present = emp.id not in scheduler.absent_employees
         row = {
-            "#": idx,
+            "_id": emp.id,
             "Present": is_present,
             "Employee": emp.name,
-            "Cert": cert_labels.get(emp.certification_level, "?"),
+            "Cert": f"{emp.certification_level} - {cert_labels.get(emp.certification_level, '?')}",
         }
         for station in scheduler.stations.values():
             competency = emp.get_competency(station.id)
-            indicator = level_indicators.get(competency, "")
-            row[station.name] = f"{indicator} {competency} - {skill_labels.get(competency, '?')}"
+            row[station.name] = f"{competency} - {skill_labels.get(competency, '?')}"
         matrix_data.append(row)
 
-    df = pd.DataFrame(matrix_data)
+    # Define columns (needed for empty table to show add row option)
+    columns = ["_id", "Present", "Employee", "Cert"] + [s.name for s in scheduler.stations.values()]
+    df = pd.DataFrame(matrix_data, columns=columns) if matrix_data else pd.DataFrame(columns=columns)
 
-    # Configure column settings
+    # Configure column settings with dropdowns
     column_config = {
-        "#": st.column_config.NumberColumn("#", disabled=True, width="small"),
+        "_id": None,  # Hide the ID column
         "Present": st.column_config.CheckboxColumn(
             "Present",
             help="Uncheck to mark employee as absent",
             default=True,
         ),
-        "Employee": st.column_config.TextColumn("Employee", disabled=True),
-        "Cert": st.column_config.TextColumn("Cert", disabled=True),
+        "Employee": st.column_config.TextColumn(
+            "Employee",
+            help="Employee name",
+            required=True,
+        ),
+        "Cert": st.column_config.SelectboxColumn(
+            "Cert",
+            help="Certification level",
+            options=cert_options,
+            required=True,
+        ),
     }
 
-    # Make station columns read-only
+    # Station columns as dropdowns
     for station in scheduler.stations.values():
-        column_config[station.name] = st.column_config.TextColumn(station.name, disabled=True)
+        column_config[station.name] = st.column_config.SelectboxColumn(
+            station.name,
+            help=f"Competency level for {station.name}",
+            options=skill_options,
+            required=True,
+        )
 
-    # Display editable table
+    # Display editable table with ability to add rows
     edited_df = st.data_editor(
         df,
         column_config=column_config,
         use_container_width=True,
         hide_index=True,
+        num_rows="dynamic",
         key="matrix_editor",
     )
 
-    # Check for presence changes
-    for idx, emp_id in enumerate(emp_ids):
-        was_present = emp_id not in scheduler.absent_employees
-        is_now_present = edited_df.iloc[idx]["Present"]
+    # Process changes
+    changes_made = False
 
-        if was_present and not is_now_present:
-            # Mark as absent
-            scheduler.absent_employees.add(emp_id)
-            scheduler.available_employees.discard(emp_id)
+    # Get current employee IDs from dataframe (handles additions/deletions)
+    current_ids = set(edited_df["_id"].dropna().tolist()) if "_id" in edited_df.columns else set()
+    original_ids = set(emp_ids)
+
+    # Handle deleted employees
+    deleted_ids = original_ids - current_ids
+    for emp_id in deleted_ids:
+        emp_name = scheduler.employees[emp_id].name
+        del scheduler.employees[emp_id]
+        scheduler.available_employees.discard(emp_id)
+        scheduler.absent_employees.discard(emp_id)
+        if SUPABASE_ENABLED:
+            db.delete_employee(emp_id)
+            db.delete_competencies_for_employee(emp_id)
+        log_action("Deleted employee", emp_name)
+        changes_made = True
+
+    # Process each row
+    for idx, row in edited_df.iterrows():
+        emp_id = row.get("_id")
+        emp_name = row.get("Employee", "").strip() if pd.notna(row.get("Employee")) else ""
+
+        # Skip empty rows
+        if not emp_name:
+            continue
+
+        # Parse cert level from dropdown value (e.g., "1 - Apprentice" -> 1)
+        cert_str = row.get("Cert", "0 - None")
+        cert_level = int(cert_str.split(" - ")[0]) if pd.notna(cert_str) and " - " in str(cert_str) else 0
+
+        # Parse competencies from dropdown values
+        competencies = {}
+        for station in scheduler.stations.values():
+            comp_str = row.get(station.name, "0 - N/A")
+            comp_level = int(comp_str.split(" - ")[0]) if pd.notna(comp_str) and " - " in str(comp_str) else 0
+            competencies[station.id] = comp_level
+
+        is_present = row.get("Present", True)
+
+        # New employee (no ID yet)
+        if pd.isna(emp_id) or emp_id not in scheduler.employees:
+            new_id = generate_id("emp")
+            new_employee = Employee(
+                id=new_id,
+                name=emp_name,
+                station_competencies=competencies,
+                certification_level=cert_level,
+            )
+            scheduler.employees[new_id] = new_employee
+            if is_present:
+                scheduler.available_employees.add(new_id)
+            else:
+                scheduler.absent_employees.add(new_id)
             if SUPABASE_ENABLED:
-                db.update_employee_absence(emp_id, True)
-            # Remove from any assignments
-            for assignment in scheduler.assignments.values():
-                if emp_id in assignment.assigned_employee_ids:
-                    assignment.assigned_employee_ids.remove(emp_id)
-                    assignment.unfilled_slots += 1
-                    assignment.is_fully_staffed = False
-            st.session_state.schedule_generated = False
-            log_action("Marked absent", scheduler.employees[emp_id].name)
-            st.rerun()
-        elif not was_present and is_now_present:
-            # Mark as present
-            scheduler.absent_employees.discard(emp_id)
-            scheduler.available_employees.add(emp_id)
-            if SUPABASE_ENABLED:
-                db.update_employee_absence(emp_id, False)
-            st.session_state.schedule_generated = False
-            log_action("Marked present", scheduler.employees[emp_id].name)
-            st.rerun()
+                db.upsert_employee({
+                    "id": new_id,
+                    "name": emp_name,
+                    "certification_level": cert_level,
+                    "is_absent": not is_present,
+                })
+                db.upsert_competencies(new_id, competencies)
+            log_action("Added employee", emp_name)
+            changes_made = True
+        else:
+            # Existing employee - check for changes
+            employee = scheduler.employees[emp_id]
+            employee_changed = False
+
+            # Check name change
+            if employee.name != emp_name:
+                old_name = employee.name
+                employee.name = emp_name
+                log_action("Renamed employee", f"{old_name} → {emp_name}")
+                employee_changed = True
+
+            # Check cert change
+            if employee.certification_level != cert_level:
+                employee.certification_level = cert_level
+                employee_changed = True
+
+            # Check competency changes
+            for station_id, level in competencies.items():
+                if employee.get_competency(station_id) != level:
+                    employee.station_competencies[station_id] = level
+                    employee_changed = True
+
+            # Check presence change
+            was_present = emp_id not in scheduler.absent_employees
+            if was_present and not is_present:
+                scheduler.absent_employees.add(emp_id)
+                scheduler.available_employees.discard(emp_id)
+                if SUPABASE_ENABLED:
+                    db.update_employee_absence(emp_id, True)
+                for assignment in scheduler.assignments.values():
+                    if emp_id in assignment.assigned_employee_ids:
+                        assignment.assigned_employee_ids.remove(emp_id)
+                        assignment.unfilled_slots += 1
+                        assignment.is_fully_staffed = False
+                log_action("Marked absent", emp_name)
+                employee_changed = True
+            elif not was_present and is_present:
+                scheduler.absent_employees.discard(emp_id)
+                scheduler.available_employees.add(emp_id)
+                if SUPABASE_ENABLED:
+                    db.update_employee_absence(emp_id, False)
+                log_action("Marked present", emp_name)
+                employee_changed = True
+
+            if employee_changed:
+                if SUPABASE_ENABLED:
+                    db.upsert_employee({
+                        "id": emp_id,
+                        "name": emp_name,
+                        "certification_level": cert_level,
+                        "is_absent": not is_present,
+                    })
+                    db.upsert_competencies(emp_id, competencies)
+                changes_made = True
+
+    if changes_made:
+        st.session_state.schedule_generated = False
+        auto_save()
+        st.rerun()
 
     # Show station requirements
     st.subheader("Station Requirements")
@@ -2025,14 +1935,6 @@ def main():
 
     init_session_state()
     render_sidebar()
-
-    # Show add/edit employee form if active
-    if st.session_state.adding_employee:
-        render_add_employee_form()
-        st.divider()
-    elif st.session_state.editing_employee:
-        render_edit_employee_form()
-        st.divider()
 
     if get_current_user_email() == ADMIN_EMAIL:
         tab1, tab2, tab3, tab4 = st.tabs(["Cross-Training Matrix", "Schedule", "Rotation Dashboard", "Activity Log"])
