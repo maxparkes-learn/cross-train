@@ -760,8 +760,17 @@ def display_cross_training_matrix():
         st.info("No stations. Add some in the sidebar →")
         return
 
-    # Build dropdown options for skill levels and certifications
-    skill_options = [f"{i} - {skill_labels[i]}" for i in range(5)]
+    # Competency level indicators (colored squares)
+    level_indicators = {
+        0: "⬜",  # White - N/A
+        1: "🟥",  # Red - needs attention
+        2: "🟧",  # Orange - developing
+        3: "🟨",  # Yellow - competent
+        4: "🟩",  # Green - trainer
+    }
+
+    # Build dropdown options for skill levels and certifications (with emojis)
+    skill_options = [f"{level_indicators[i]} {i} - {skill_labels[i]}" for i in range(5)]
     cert_options = [f"{i} - {cert_labels[i]}" for i in range(3)]
 
     # Build matrix data with employee IDs for tracking
@@ -778,7 +787,8 @@ def display_cross_training_matrix():
         }
         for station in scheduler.stations.values():
             competency = emp.get_competency(station.id)
-            row[station.name] = f"{competency} - {skill_labels.get(competency, '?')}"
+            indicator = level_indicators.get(competency, "")
+            row[station.name] = f"{indicator} {competency} - {skill_labels.get(competency, '?')}"
         matrix_data.append(row)
 
     # Define columns (needed for empty table to show add row option)
@@ -815,10 +825,14 @@ def display_cross_training_matrix():
             required=True,
         )
 
+    # Define column order (Employee first after Present, then Cert, then stations)
+    column_order = ["Present", "Employee", "Cert"] + [s.name for s in scheduler.stations.values()]
+
     # Display editable table with ability to add rows
     edited_df = st.data_editor(
         df,
         column_config=column_config,
+        column_order=column_order,
         use_container_width=True,
         hide_index=True,
         num_rows="dynamic",
@@ -858,11 +872,17 @@ def display_cross_training_matrix():
         cert_str = row.get("Cert", "0 - None")
         cert_level = int(cert_str.split(" - ")[0]) if pd.notna(cert_str) and " - " in str(cert_str) else 0
 
-        # Parse competencies from dropdown values
+        # Parse competencies from dropdown values (format: "⬜ 0 - N/A")
         competencies = {}
         for station in scheduler.stations.values():
-            comp_str = row.get(station.name, "0 - N/A")
-            comp_level = int(comp_str.split(" - ")[0]) if pd.notna(comp_str) and " - " in str(comp_str) else 0
+            comp_str = row.get(station.name, "⬜ 0 - N/A")
+            # Extract the digit before the " - " (handles emoji prefix)
+            if pd.notna(comp_str) and " - " in str(comp_str):
+                before_dash = str(comp_str).split(" - ")[0]  # "⬜ 0"
+                # Get the last character which should be the digit
+                comp_level = int(before_dash.strip()[-1])
+            else:
+                comp_level = 0
             competencies[station.id] = comp_level
 
         is_present = row.get("Present", True)
