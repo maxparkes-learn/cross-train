@@ -12,10 +12,11 @@ function LoginContent() {
 
   useEffect(() => {
     const err = searchParams.get('error')
+    const detail = searchParams.get('detail')
     if (err === 'unauthorized_domain') {
       setError('Access denied. Only @clutch.ca accounts are allowed.')
     } else if (err === 'auth_failed') {
-      setError('Authentication failed. Please try again.')
+      setError(`Authentication failed${detail ? `: ${decodeURIComponent(detail)}` : '. Please try again.'}`)
     }
   }, [searchParams])
 
