@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
     {
       cookies: {
         getAll: () => request.cookies.getAll(),
-        setAll: (cookies) => {
+        setAll: (cookies: { name: string; value: string; options?: Record<string, unknown> }[]) => {
           pendingCookies.push(
             ...cookies.map(({ name, value, options }) => ({
               name,
