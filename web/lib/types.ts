@@ -4,15 +4,28 @@ export interface Station {
   required_skill_level: number
   required_headcount: number
   required_certification: number
+  sort_order: number
   created_at?: string
 }
+
+export interface EmployeeGroup {
+  id: string
+  name: string
+  color: string
+}
+
+export const DEFAULT_EMPLOYEE_GROUPS: EmployeeGroup[] = []
 
 export interface Employee {
   id: string
   name: string
   certification_level: number
   is_absent: boolean
+  is_archived: boolean
+  department_id: string
+  sort_order: number
   station_competencies: Record<string, number>
+  group_ids: string[]
   created_at?: string
 }
 
@@ -99,6 +112,21 @@ export const DEFAULT_COMPETENCY_COLORS: Record<number, string> = {
   2: '#FFE5B4',
   3: '#D4EDDA',
   4: '#28A745',
+}
+
+export interface Department {
+  id: string
+  name: string
+  created_at?: string
+}
+
+export type UserRole = 'superadmin' | 'admin' | 'manager'
+
+export interface UserProfile {
+  email: string
+  display_name: string
+  role: UserRole
+  created_at?: string
 }
 
 export const ADMIN_EMAIL = 'max.parkes@clutch.ca'

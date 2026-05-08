@@ -3,9 +3,11 @@
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { Suspense } from 'react'
+import { createClient } from '@/lib/supabase/client'
 
 function LoginContent() {
   const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
   const searchParams = useSearchParams()
 
   useEffect(() => {
@@ -18,6 +20,23 @@ function LoginContent() {
     }
   }, [searchParams])
 
+  async function handleSignIn() {
+    setLoading(true)
+    setError(null)
+    const supabase = createClient()
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: `${window.location.origin}/auth/callback`,
+      },
+    })
+    if (error) {
+      setError(`Authentication failed: ${error.message}`)
+      setLoading(false)
+    }
+    // On success the browser navigates away — no need to setLoading(false)
+  }
+
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center">
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-10 w-full max-w-sm text-center">
@@ -26,14 +45,18 @@ function LoginContent() {
         <p className="text-sm text-gray-500 mb-8">Sign in with your Clutch Google account</p>
 
         {error && (
-          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
-            {error}
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 text-left">
+            <div>{error}</div>
+            <div className="mt-2 text-xs text-red-500 break-all">
+              URL: {typeof window !== 'undefined' ? window.location.href : ''}
+            </div>
           </div>
         )}
 
-        <a
-          href="/auth/signin"
-          className="w-full inline-flex items-center justify-center gap-3 px-4 py-2.5 border border-gray-300 rounded-full text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 transition-colors"
+        <button
+          onClick={handleSignIn}
+          disabled={loading}
+          className="w-full inline-flex items-center justify-center gap-3 px-4 py-2.5 border border-gray-300 rounded-full text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <svg width="18" height="18" viewBox="0 0 48 48" fill="none">
             <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
@@ -41,8 +64,8 @@ function LoginContent() {
             <path fill="#FBBC05" d="M10.53 28.59a14.5 14.5 0 0 1 0-9.18l-7.98-6.19a24 24 0 0 0 0 21.56l7.98-6.19z"/>
             <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
           </svg>
-          Sign in with Google
-        </a>
+          {loading ? 'Redirecting…' : 'Sign in with Google'}
+        </button>
       </div>
     </div>
   )

@@ -3,15 +3,14 @@
 import { useState, useEffect } from 'react'
 import { useApp } from '@/components/AppShell'
 import { fetchAuditLogs } from '@/lib/db'
-import { ADMIN_EMAIL } from '@/lib/types'
 import type { AuditLog } from '@/lib/types'
 import { redirect } from 'next/navigation'
 
 export default function ActivityPage() {
-  const { user } = useApp()
+  const { userRole, activeDepartment } = useApp()
 
-  if (user.email !== ADMIN_EMAIL) {
-    redirect('/matrix')
+  if (userRole !== 'admin' && userRole !== 'superadmin') {
+    redirect(`/${activeDepartment?.id ?? ''}/matrix`)
   }
 
   const [logs, setLogs] = useState<AuditLog[]>([])

@@ -2,14 +2,19 @@
 
 import { createContext, useContext, useEffect, useState, useCallback } from 'react'
 import type { User } from '@supabase/supabase-js'
-import type { Station, Employee, AppSettings } from '@/lib/types'
+import type { Station, Employee, AppSettings, Department, UserRole } from '@/lib/types'
 import {
   DEFAULT_SKILL_LABELS,
   DEFAULT_CERT_LABELS,
   DEFAULT_COMPETENCY_COLORS,
-  ADMIN_EMAIL,
 } from '@/lib/types'
-import { fetchStations, fetchEmployees, fetchSettings } from '@/lib/db'
+import {
+  fetchStations,
+  fetchEmployees,
+  fetchSettings,
+  fetchDepartments,
+  fetchUserDepartments,
+} from '@/lib/db'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter, usePathname } from 'next/navigation'
 import Sidebar from './Sidebar'
@@ -22,8 +27,12 @@ interface AppContextValue {
   refreshData: () => Promise<void>
   refreshStations: () => Promise<void>
   refreshEmployees: () => Promise<void>
+  refreshDepartments: () => Promise<void>
   updateSettings: (next: AppSettings) => void
   user: User
+  userRole: UserRole
+  departments: Department[]
+  activeDepartment: Department | null
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
@@ -36,9 +45,13 @@ export function useApp() {
 
 export default function AppShell({
   user,
+  activeDeptId,
+  userRole,
   children,
 }: {
   user: User
+  activeDeptId: string
+  userRole: UserRole
   children: React.ReactNode
 }) {
   const router = useRouter()
@@ -51,27 +64,58 @@ export default function AppShell({
     certLabels: { ...DEFAULT_CERT_LABELS },
     competencyColors: { ...DEFAULT_COMPETENCY_COLORS },
   })
+  const [departments, setDepartments] = useState<Department[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+
+  useEffect(() => {
+    const stored = localStorage.getItem('sidebar-collapsed')
+    if (stored === 'true') setSidebarCollapsed(true)
+  }, [])
+
+  const toggleSidebarCollapsed = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev
+      localStorage.setItem('sidebar-collapsed', String(next))
+      return next
+    })
+  }, [])
+
+  const isAdmin = userRole === 'admin' || userRole === 'superadmin'
+  const activeDepartment = departments.find((d) => d.id === activeDeptId) ?? null
+
+  const refreshDepartments = useCallback(async () => {
+    const data = isAdmin
+      ? await fetchDepartments()
+      : await fetchUserDepartments(user.email!)
+    setDepartments(data)
+  }, [isAdmin, user.email])
 
   const refreshStations = useCallback(async () => {
-    const data = await fetchStations()
+    const data = await fetchStations(activeDeptId)
     setStations(data)
-  }, [])
+  }, [activeDeptId])
 
   const refreshEmployees = useCallback(async () => {
-    const data = await fetchEmployees()
+    const data = await fetchEmployees(activeDeptId)
     setEmployees(data)
-  }, [])
+  }, [activeDeptId])
 
   const refreshData = useCallback(async () => {
     setIsLoading(true)
-    const [s, e, cfg] = await Promise.all([fetchStations(), fetchEmployees(), fetchSettings()])
+    const [s, e, cfg, depts] = await Promise.all([
+      fetchStations(activeDeptId),
+      fetchEmployees(activeDeptId),
+      fetchSettings(activeDeptId),
+      isAdmin ? fetchDepartments() : fetchUserDepartments(user.email!),
+    ])
     setStations(s)
     setEmployees(e)
     setSettings(cfg)
+    setDepartments(depts)
     setIsLoading(false)
-  }, [])
+  }, [activeDeptId, isAdmin, user.email])
 
   useEffect(() => {
     refreshData()
@@ -83,14 +127,16 @@ export default function AppShell({
     router.push('/auth/login')
   }
 
-  const isAdmin = user.email === ADMIN_EMAIL
-
   const navItems = [
-    { href: '/matrix', label: 'Cross-Training Matrix', icon: '⊞' },
-    { href: '/schedule', label: 'Schedule', icon: '📋' },
-    { href: '/rotation', label: 'Rotation Dashboard', icon: '📊' },
-    ...(isAdmin ? [{ href: '/activity', label: 'Activity Log', icon: '🕐' }] : []),
+    { href: `/${activeDeptId}/matrix`, label: 'Cross-Training Matrix', icon: '⊞' },
+    { href: `/${activeDeptId}/schedule`, label: 'Schedule', icon: '📋' },
+    { href: `/${activeDeptId}/rotation`, label: 'Rotation Dashboard', icon: '📊' },
+    ...(isAdmin ? [{ href: `/${activeDeptId}/activity`, label: 'Activity Log', icon: '🕐' }] : []),
+    ...(isAdmin ? [{ href: `/${activeDeptId}/users`, label: 'Users', icon: '👥' }] : []),
+    ...(isAdmin ? [{ href: `/${activeDeptId}/employees`, label: 'Employees', icon: '👤' }] : []),
   ]
+
+  const activeLabel = navItems.find((n) => pathname.startsWith(n.href))?.label ?? 'Rotation & Safety'
 
   return (
     <AppContext.Provider
@@ -102,12 +148,15 @@ export default function AppShell({
         refreshData,
         refreshStations,
         refreshEmployees,
+        refreshDepartments,
         updateSettings: setSettings,
         user,
+        userRole,
+        departments,
+        activeDepartment,
       }}
     >
       <div className="flex h-screen overflow-hidden bg-gray-50">
-        {/* Mobile overlay */}
         {sidebarOpen && (
           <div
             className="fixed inset-0 bg-black/40 z-20 lg:hidden"
@@ -115,11 +164,10 @@ export default function AppShell({
           />
         )}
 
-        {/* Sidebar */}
         <aside
-          className={`fixed lg:static inset-y-0 left-0 z-30 w-72 bg-gray-900 text-white flex flex-col transform transition-transform duration-200 ${
+          className={`fixed lg:static inset-y-0 left-0 z-30 bg-gray-900 text-white flex flex-col transform transition-all duration-200 ${
             sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
-          }`}
+          } ${sidebarCollapsed && !sidebarOpen ? 'lg:w-14' : 'w-72'}`}
         >
           <Sidebar
             navItems={navItems}
@@ -127,15 +175,20 @@ export default function AppShell({
             stations={stations}
             settings={settings}
             user={user}
+            userRole={userRole}
+            departments={departments}
+            activeDepartment={activeDepartment}
+            activeDeptId={activeDeptId}
             onSignOut={handleSignOut}
             onStationsChange={refreshStations}
             onSettingsChange={setSettings}
+            onDepartmentsChange={refreshDepartments}
+            collapsed={sidebarCollapsed && !sidebarOpen}
+            onToggleCollapsed={toggleSidebarCollapsed}
           />
         </aside>
 
-        {/* Main content */}
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-          {/* Mobile header */}
           <div className="lg:hidden flex items-center gap-3 px-4 py-3 bg-white border-b border-gray-200">
             <button
               onClick={() => setSidebarOpen(true)}
@@ -145,9 +198,7 @@ export default function AppShell({
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
               </svg>
             </button>
-            <span className="font-semibold text-gray-900 text-sm">
-              {navItems.find((n) => n.href === pathname)?.label ?? 'Rotation & Safety'}
-            </span>
+            <span className="font-semibold text-gray-900 text-sm">{activeLabel}</span>
           </div>
 
           <main className="flex-1 overflow-y-auto p-6">{children}</main>

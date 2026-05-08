@@ -1,0 +1,596 @@
+'use client'
+
+import { useState } from 'react'
+import { useApp } from '@/components/AppShell'
+import {
+  generateSchedule,
+  SCENARIOS,
+  SCENARIO_DESCRIPTIONS,
+  checkEmployeeIsQualified,
+} from '@/lib/scheduler'
+import type { Assignment, CrossTrainingAssignment } from '@/lib/types'
+import {
+  fetchAllAssignmentLogs,
+  upsertAssignmentLogs,
+  upsertCrossTrainingLogs,
+  insertAuditLog,
+  upsertSetting,
+  fetchSetting,
+} from '@/lib/db'
+
+function todayStr() {
+  return new Date().toISOString().split('T')[0]
+}
+
+export default function SchedulePage() {
+  const { stations, employees, settings, user, activeDepartment } = useApp()
+  const { skillLabels, certLabels } = settings
+
+  const [scenarioName, setScenarioName] = useState('Balanced')
+  const [schedule, setSchedule] = useState<Record<string, Assignment> | null>(null)
+  const [activeScenario, setActiveScenario] = useState('')
+  const [generating, setGenerating] = useState(false)
+  const [editMode, setEditMode] = useState(false)
+  // employee_id → station_id ('' = unassigned)
+  const [gridAssignments, setGridAssignments] = useState<Record<string, string>>({})
+  const [ctAssignments, setCtAssignments] = useState<CrossTrainingAssignment[]>([])
+  const [finalizeDate, setFinalizeDate] = useState(todayStr())
+  const [defaultHours, setDefaultHours] = useState(8)
+  const [finalizing, setFinalizing] = useState(false)
+  const [finalizeMsg, setFinalizeMsg] = useState('')
+  const [templateSaving, setTemplateSaving] = useState(false)
+  const [templateMsg, setTemplateMsg] = useState('')
+
+  const absentIds = new Set(employees.filter((e) => e.is_absent).map((e) => e.id))
+  const stationsMap = new Map(stations.map((s) => [s.id, s]))
+  const employeesMap = new Map(employees.map((e) => [e.id, e]))
+  const presentEmployees = employees.filter((e) => !e.is_absent)
+
+  function buildEmptySchedule(): Record<string, Assignment> {
+    const s: Record<string, Assignment> = {}
+    for (const station of stations) {
+      s[station.id] = { station_id: station.id, assigned_employee_ids: [], is_fully_staffed: false, unfilled_slots: station.required_headcount }
+    }
+    return s
+  }
+
+  function gridToSchedule(grid: Record<string, string>): Record<string, Assignment> {
+    const result: Record<string, Assignment> = {}
+    for (const station of stations) {
+      const ids = presentEmployees.filter((e) => grid[e.id] === station.id).map((e) => e.id)
+      result[station.id] = {
+        station_id: station.id,
+        assigned_employee_ids: ids,
+        is_fully_staffed: ids.length >= station.required_headcount,
+        unfilled_slots: Math.max(0, station.required_headcount - ids.length),
+      }
+    }
+    return result
+  }
+
+  function scheduleToGrid(sched: Record<string, Assignment>): Record<string, string> {
+    return Object.fromEntries(
+      Object.values(sched).flatMap((a) => a.assigned_employee_ids.map((empId) => [empId, a.station_id]))
+    )
+  }
+
+  const handleAssignManually = () => {
+    setSchedule(buildEmptySchedule())
+    setActiveScenario('Manual')
+    setEditMode(true)
+    setGridAssignments({})
+    setCtAssignments([])
+    setFinalizeMsg('')
+    setTemplateMsg('')
+  }
+
+  const handleGenerate = async () => {
+    setGenerating(true)
+    setFinalizeMsg('')
+    setTemplateMsg('')
+    try {
+      const logs = await fetchAllAssignmentLogs()
+      const newSchedule = generateSchedule(stations, employees, absentIds, logs, scenarioName)
+      setSchedule(newSchedule)
+      setActiveScenario(scenarioName)
+      setEditMode(false)
+      setGridAssignments({})
+      setCtAssignments([])
+      await insertAuditLog(user.email ?? '', 'Generated schedule', scenarioName)
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  const handleEnterEdit = () => {
+    if (!schedule) return
+    setGridAssignments(scheduleToGrid(schedule))
+    setEditMode(true)
+  }
+
+  const handleApplyGrid = () => {
+    setSchedule(gridToSchedule(gridAssignments))
+    setEditMode(false)
+  }
+
+  const handleToggleCell = (empId: string, stationId: string) => {
+    setGridAssignments((prev) => {
+      if (prev[empId] === stationId) {
+        const next = { ...prev }
+        delete next[empId]
+        return next
+      }
+      return { ...prev, [empId]: stationId }
+    })
+  }
+
+  const handleSaveDefault = async () => {
+    if (!activeDepartment) return
+    setTemplateSaving(true)
+    setTemplateMsg('')
+    try {
+      await upsertSetting('schedule_default', gridAssignments, activeDepartment.id)
+      setTemplateMsg('Default saved ✓')
+    } finally {
+      setTemplateSaving(false)
+    }
+  }
+
+  const handleLoadDefault = async () => {
+    if (!activeDepartment) return
+    setTemplateMsg('')
+    const saved = await fetchSetting('schedule_default', activeDepartment.id)
+    if (!saved || typeof saved !== 'object') {
+      setTemplateMsg('No default saved yet')
+      return
+    }
+    // Filter out employees who are absent or no longer exist
+    const validEmpIds = new Set(presentEmployees.map((e) => e.id))
+    const validStationIds = new Set(stations.map((s) => s.id))
+    const filtered: Record<string, string> = {}
+    for (const [empId, stnId] of Object.entries(saved as Record<string, string>)) {
+      if (validEmpIds.has(empId) && validStationIds.has(stnId)) filtered[empId] = stnId
+    }
+    setSchedule(buildEmptySchedule())
+    setActiveScenario('Default')
+    setEditMode(true)
+    setGridAssignments(filtered)
+    setCtAssignments([])
+    setFinalizeMsg('')
+  }
+
+  const handleFinalizeDay = async () => {
+    if (!schedule) return
+    setFinalizing(true)
+    setFinalizeMsg('')
+    try {
+      const assignLogs = Object.values(schedule).flatMap((a) =>
+        a.assigned_employee_ids.map((empId) => ({
+          log_date: finalizeDate,
+          employee_id: empId,
+          station_id: a.station_id,
+          hours: defaultHours,
+        })),
+      )
+      const ctLogs = ctAssignments.map((ct) => ({
+        log_date: finalizeDate,
+        trainer_id: ct.trainer_id,
+        trainee_id: ct.trainee_id,
+        station_id: ct.station_id,
+        hours: defaultHours,
+      }))
+      await upsertAssignmentLogs(assignLogs)
+      if (ctLogs.length > 0) await upsertCrossTrainingLogs(ctLogs)
+      await insertAuditLog(user.email ?? '', 'Finalized day', `${finalizeDate} — ${assignLogs.length} assignments`)
+      setFinalizeMsg(`Day finalized: ${assignLogs.length} assignments recorded for ${finalizeDate}`)
+      setSchedule(null)
+      setCtAssignments([])
+    } catch (e) {
+      setFinalizeMsg(`Error: ${String(e)}`)
+    } finally {
+      setFinalizing(false)
+    }
+  }
+
+  const handleGeneratePDF = async () => {
+    if (!schedule) return
+    const { jsPDF } = await import('jspdf')
+    const autoTable = (await import('jspdf-autotable')).default
+    const doc = new jsPDF()
+    doc.setFontSize(16)
+    doc.text('Rotation & Safety Management System', 14, 18)
+    doc.setFontSize(11)
+    doc.setTextColor(100)
+    doc.text(`Schedule — ${finalizeDate}`, 14, 26)
+    doc.text(`Strategy: ${activeScenario}`, 14, 33)
+    doc.setTextColor(0)
+    const rows = Object.values(schedule).map((a) => {
+      const station = stationsMap.get(a.station_id)
+      const assigned = a.assigned_employee_ids
+        .map((id) => { const emp = employeesMap.get(id); if (!emp) return ''; const comp = emp.station_competencies[a.station_id] ?? 0; return `${emp.name} (${skillLabels[comp]})` })
+        .join(', ')
+      return [station?.name ?? a.station_id, skillLabels[station?.required_skill_level ?? 0], certLabels[station?.required_certification ?? 0], assigned || '—', `${a.assigned_employee_ids.length}/${station?.required_headcount ?? 1}`, a.is_fully_staffed ? 'Staffed' : 'Understaffed']
+    })
+    autoTable(doc, {
+      startY: 40,
+      head: [['Station', 'Req. Competency', 'Req. Cert.', 'Assigned', 'Filled', 'Status']],
+      body: rows,
+      styles: { fontSize: 9 },
+      headStyles: { fillColor: [79, 70, 229] },
+      didDrawCell: (data) => {
+        if (data.column.index === 5 && data.section === 'body') {
+          const cell = data.cell
+          const text = String(cell.text)
+          if (text.includes('Understaffed')) {
+            doc.setFillColor(254, 202, 202)
+            doc.rect(cell.x, cell.y, cell.width, cell.height, 'F')
+            doc.setTextColor(153, 27, 27)
+            doc.setFontSize(9)
+            doc.text(text, cell.x + 2, cell.y + cell.height / 2 + 1)
+            doc.setTextColor(0)
+          }
+        }
+      },
+    })
+    doc.save(`schedule_${finalizeDate}.pdf`)
+  }
+
+  if (!stations.length || !employees.length) {
+    return (
+      <div className="max-w-xl">
+        <h1 className="text-2xl font-bold text-gray-900 mb-2">Schedule</h1>
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-700">
+          Add stations and employees in the Cross-Training Matrix first.
+        </div>
+      </div>
+    )
+  }
+
+  const assignedIds = new Set(schedule ? Object.values(schedule).flatMap((a) => a.assigned_employee_ids) : [])
+  const unassignedIds = [...presentEmployees.map((e) => e.id)].filter((id) => !assignedIds.has(id))
+  const totalStations = schedule ? Object.keys(schedule).length : 0
+  const filledStations = schedule ? Object.values(schedule).filter((a) => a.is_fully_staffed).length : 0
+  const understaffedStations = totalStations - filledStations
+
+  return (
+    <div className="space-y-6">
+      <h1 className="text-2xl font-bold text-gray-900">Schedule</h1>
+
+      {/* Controls */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex-1 min-w-48">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Scheduling Strategy</label>
+            <select
+              value={scenarioName}
+              onChange={(e) => setScenarioName(e.target.value)}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              {Object.keys(SCENARIOS).map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <button onClick={handleGenerate} disabled={generating} className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors">
+            {generating ? 'Generating…' : 'Generate Schedule'}
+          </button>
+          <button onClick={handleAssignManually} className="border border-gray-300 hover:bg-gray-50 text-gray-700 text-sm font-medium px-5 py-2 rounded-lg transition-colors">
+            Assign Manually
+          </button>
+          <button onClick={handleLoadDefault} className="border border-gray-300 hover:bg-gray-50 text-gray-700 text-sm font-medium px-5 py-2 rounded-lg transition-colors">
+            Load Default ↓
+          </button>
+        </div>
+        <div className="flex items-center justify-between mt-2">
+          <p className="text-xs text-gray-500">{SCENARIO_DESCRIPTIONS[scenarioName]}</p>
+          {templateMsg && <p className="text-xs text-gray-500">{templateMsg}</p>}
+        </div>
+      </div>
+
+      {schedule && (
+        <>
+          {/* Metrics */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {[
+              { label: 'Total Stations', value: totalStations },
+              { label: 'Fully Staffed', value: filledStations, good: true },
+              { label: 'Understaffed', value: understaffedStations, bad: understaffedStations > 0 },
+              { label: 'Unassigned', value: unassignedIds.length },
+            ].map((m) => (
+              <div key={m.label} className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+                <p className="text-xs text-gray-500">{m.label}</p>
+                <p className={`text-2xl font-bold ${m.bad ? 'text-red-600' : m.good ? 'text-green-600' : 'text-gray-900'}`}>{m.value}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Assignments table */}
+          {!editMode && (
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+              <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+                <div>
+                  <h2 className="font-semibold text-gray-900">Assignments</h2>
+                  {activeScenario && activeScenario !== 'Manual' && activeScenario !== 'Default' && (
+                    <p className="text-xs text-gray-500">Strategy: {activeScenario}</p>
+                  )}
+                  {(activeScenario === 'Manual' || activeScenario === 'Default') && (
+                    <p className="text-xs text-gray-500">{activeScenario === 'Default' ? 'Loaded from default' : 'Manually assigned'}</p>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={handleGeneratePDF} className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-50 transition-colors">
+                    Download PDF
+                  </button>
+                  <button onClick={handleEnterEdit} className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-50 transition-colors">
+                    Edit Assignments
+                  </button>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-100">
+                      <th className="px-4 py-2.5 text-left font-medium text-gray-600">Station</th>
+                      <th className="px-4 py-2.5 text-left font-medium text-gray-600">Req. Competency</th>
+                      <th className="px-4 py-2.5 text-left font-medium text-gray-600">Req. Cert.</th>
+                      <th className="px-4 py-2.5 text-left font-medium text-gray-600">Assigned</th>
+                      <th className="px-4 py-2.5 text-center font-medium text-gray-600">Filled</th>
+                      <th className="px-4 py-2.5 text-center font-medium text-gray-600">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.values(schedule).map((a) => {
+                      const station = stationsMap.get(a.station_id)
+                      if (!station) return null
+                      const assignedNames = a.assigned_employee_ids.map((id) => {
+                        const emp = employeesMap.get(id)
+                        if (!emp) return null
+                        const comp = emp.station_competencies[a.station_id] ?? 0
+                        return `${emp.name} (C:${comp}, ${certLabels[emp.certification_level]})`
+                      }).filter(Boolean).join(', ')
+                      return (
+                        <tr key={a.station_id} className="border-b border-gray-100 hover:bg-gray-50/50">
+                          <td className="px-4 py-2.5 font-medium">{station.name}</td>
+                          <td className="px-4 py-2.5 text-gray-600">{skillLabels[station.required_skill_level]}</td>
+                          <td className="px-4 py-2.5 text-gray-600">{certLabels[station.required_certification]}</td>
+                          <td className="px-4 py-2.5 text-gray-600">{assignedNames || '—'}</td>
+                          <td className="px-4 py-2.5 text-center">{a.assigned_employee_ids.length}/{station.required_headcount}</td>
+                          <td className="px-4 py-2.5 text-center">
+                            {a.is_fully_staffed
+                              ? <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs font-medium">✓ Staffed</span>
+                              : <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-red-100 text-red-700 rounded-full text-xs font-medium">⚠ Understaffed</span>
+                            }
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Assignment grid */}
+          {editMode && (
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+              <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+                <div>
+                  <h2 className="font-semibold text-gray-900">Assign Employees</h2>
+                  <p className="text-xs text-gray-500">Click a cell to assign · grayed = unqualified or already assigned</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleSaveDefault}
+                    disabled={templateSaving}
+                    className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-50 transition-colors disabled:opacity-50"
+                  >
+                    {templateSaving ? 'Saving…' : 'Save as Default ↑'}
+                  </button>
+                  <button onClick={handleApplyGrid} className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-1.5 rounded-lg transition-colors">
+                    Apply Changes
+                  </button>
+                  <button onClick={() => setEditMode(false)} className="text-sm text-gray-500 hover:text-gray-700 px-1">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm border-collapse">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-100">
+                      <th className="px-4 py-2.5 text-left font-medium text-gray-600 min-w-[140px] sticky left-0 bg-gray-50">Employee</th>
+                      <th className="px-3 py-2.5 text-left font-medium text-gray-600 whitespace-nowrap">Cert.</th>
+                      {stations.map((s) => (
+                        <th key={s.id} className="px-3 py-2.5 text-center font-medium text-gray-600 whitespace-nowrap min-w-[90px]">
+                          <div className="flex flex-col items-center gap-0.5">
+                            <span>{s.name}</span>
+                            <span className="text-xs font-normal text-gray-400">need {s.required_headcount}</span>
+                          </div>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {presentEmployees.map((emp) => {
+                      const assignedStation = gridAssignments[emp.id]
+                      return (
+                        <tr key={emp.id} className="border-b border-gray-100 hover:bg-gray-50/30">
+                          <td className="px-4 py-2 font-medium text-gray-900 sticky left-0 bg-white">{emp.name}</td>
+                          <td className="px-3 py-2 text-gray-500 text-xs whitespace-nowrap">{certLabels[emp.certification_level]}</td>
+                          {stations.map((s) => {
+                            const isAssignedHere = assignedStation === s.id
+                            const isAssignedElsewhere = assignedStation && assignedStation !== s.id
+                            const isQualified = checkEmployeeIsQualified(emp, s)
+                            const isDisabled = !isQualified || !!isAssignedElsewhere
+
+                            return (
+                              <td key={s.id} className="px-2 py-1.5 text-center">
+                                <button
+                                  disabled={isDisabled}
+                                  onClick={() => handleToggleCell(emp.id, s.id)}
+                                  title={
+                                    isAssignedElsewhere
+                                      ? `Assigned to ${stationsMap.get(assignedStation!)?.name}`
+                                      : !isQualified
+                                      ? 'Not qualified for this station'
+                                      : isAssignedHere
+                                      ? 'Click to unassign'
+                                      : 'Click to assign'
+                                  }
+                                  className={`w-8 h-8 rounded-full border-2 transition-colors mx-auto flex items-center justify-center ${
+                                    isAssignedHere
+                                      ? 'bg-indigo-600 border-indigo-600 text-white'
+                                      : isDisabled
+                                      ? 'border-gray-100 bg-gray-50 cursor-not-allowed'
+                                      : 'border-gray-300 hover:border-indigo-400 hover:bg-indigo-50 cursor-pointer'
+                                  }`}
+                                >
+                                  {isAssignedHere && <span className="text-xs font-bold">✓</span>}
+                                </button>
+                              </td>
+                            )
+                          })}
+                        </tr>
+                      )
+                    })}
+                    {/* Headcount footer */}
+                    <tr className="border-t border-gray-200 bg-gray-50">
+                      <td className="px-4 py-2 text-xs font-medium text-gray-500 sticky left-0 bg-gray-50" colSpan={2}>Filled</td>
+                      {stations.map((s) => {
+                        const count = presentEmployees.filter((e) => gridAssignments[e.id] === s.id).length
+                        const full = count >= s.required_headcount
+                        return (
+                          <td key={s.id} className="px-2 py-2 text-center text-xs font-medium">
+                            <span className={full ? 'text-green-600' : count > 0 ? 'text-amber-600' : 'text-gray-400'}>
+                              {count}/{s.required_headcount}
+                            </span>
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Cross-training assignments */}
+          {!editMode && unassignedIds.length > 0 && (
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-4">
+              <div>
+                <h2 className="font-semibold text-gray-900">Cross-Training Assignments</h2>
+                <p className="text-xs text-gray-500">Assign unassigned employees to train on-line staff at their station</p>
+              </div>
+              {unassignedIds.map((empId) => {
+                const emp = employeesMap.get(empId)
+                if (!emp) return null
+                const recs = Object.values(schedule).flatMap((a) => {
+                  const trainerComp = emp.station_competencies[a.station_id] ?? 0
+                  if (trainerComp === 0) return []
+                  return a.assigned_employee_ids.flatMap((assignedId) => {
+                    const assignedEmp = employeesMap.get(assignedId)
+                    if (!assignedEmp) return []
+                    const assignedComp = assignedEmp.station_competencies[a.station_id] ?? 0
+                    if (trainerComp > assignedComp) {
+                      return [{ station_id: a.station_id, station_name: stationsMap.get(a.station_id)?.name ?? '', trainee_id: assignedId, trainee_name: assignedEmp.name, trainee_level: assignedComp, trainer_level: trainerComp }]
+                    }
+                    return []
+                  })
+                })
+                const claimedTrainees = new Map(ctAssignments.map((ct) => [ct.trainee_id, ct.trainer_id]))
+                const currentCt = ctAssignments.find((ct) => ct.trainer_id === empId)
+                const availableRecs = recs.filter((r) => { const claimed = claimedTrainees.get(r.trainee_id); return !claimed || claimed === empId })
+                return (
+                  <div key={empId} className="border border-gray-100 rounded-lg p-4">
+                    <p className="font-medium text-gray-900 mb-2">{emp.name} <span className="text-xs text-gray-400 font-normal">({certLabels[emp.certification_level]})</span></p>
+                    {availableRecs.length === 0 ? (
+                      <p className="text-sm text-gray-400">No cross-training opportunities available</p>
+                    ) : (
+                      <select
+                        value={currentCt ? `${currentCt.trainee_id}__${currentCt.station_id}` : ''}
+                        onChange={(e) => {
+                          const val = e.target.value
+                          setCtAssignments((prev) => {
+                            const filtered = prev.filter((ct) => ct.trainer_id !== empId)
+                            if (!val) return filtered
+                            const [traineeId, stationId] = val.split('__')
+                            const rec = recs.find((r) => r.trainee_id === traineeId && r.station_id === stationId)
+                            if (!rec) return filtered
+                            return [...filtered, { trainer_id: empId, trainer_name: emp.name, trainee_id: rec.trainee_id, trainee_name: rec.trainee_name, station_id: rec.station_id, station_name: rec.station_name }]
+                          })
+                        }}
+                        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      >
+                        <option value="">— Not assigned —</option>
+                        {availableRecs.map((r) => (
+                          <option key={`${r.trainee_id}__${r.station_id}`} value={`${r.trainee_id}__${r.station_id}`}>
+                            Train {r.trainee_name} at {r.station_name} ({skillLabels[r.trainee_level]} → {skillLabels[r.trainer_level]})
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                )
+              })}
+              {ctAssignments.length > 0 && (
+                <div className="border border-gray-100 rounded-lg overflow-hidden">
+                  <div className="px-4 py-2 bg-gray-50 text-xs font-medium text-gray-600">Active Cross-Training Pairings</div>
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-100">
+                        <th className="px-4 py-2 text-left font-medium text-gray-600">Trainer</th>
+                        <th className="px-4 py-2 text-left font-medium text-gray-600">Trainee</th>
+                        <th className="px-4 py-2 text-left font-medium text-gray-600">Station</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ctAssignments.map((ct) => (
+                        <tr key={`${ct.trainer_id}_${ct.trainee_id}`} className="border-b border-gray-100">
+                          <td className="px-4 py-2">{ct.trainer_name}</td>
+                          <td className="px-4 py-2">{ct.trainee_name}</td>
+                          <td className="px-4 py-2">{ct.station_name}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Finalize day */}
+          {!editMode && (
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-4">
+              <div>
+                <h2 className="font-semibold text-gray-900">Finalize Day</h2>
+                <p className="text-xs text-gray-500">Commit today&apos;s assignments to the rotation history log</p>
+              </div>
+              <div className="flex flex-wrap gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
+                  <input type="date" value={finalizeDate} onChange={(e) => setFinalizeDate(e.target.value)} className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Default shift hours</label>
+                  <input type="number" min={0.5} max={24} step={0.5} value={defaultHours} onChange={(e) => setDefaultHours(Number(e.target.value))} className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-24 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                </div>
+              </div>
+              {finalizeMsg && (
+                <div className={`p-3 rounded-lg text-sm ${finalizeMsg.startsWith('Error') ? 'bg-red-50 border border-red-200 text-red-700' : 'bg-green-50 border border-green-200 text-green-700'}`}>
+                  {finalizeMsg}
+                </div>
+              )}
+              <button onClick={handleFinalizeDay} disabled={finalizing} className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors">
+                {finalizing ? 'Finalizing…' : 'Finalize Day'}
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {!schedule && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-700">
+          Click &quot;Generate Schedule&quot; to assign employees to stations, or use &quot;Assign Manually&quot; / &quot;Load Default&quot;.
+        </div>
+      )}
+    </div>
+  )
+}

@@ -1,6 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
-import AppShell from '@/components/AppShell'
+import { upsertUserProfile } from '@/lib/db'
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const supabase = await createClient()
@@ -10,5 +10,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   if (!user) redirect('/auth/login')
 
-  return <AppShell user={user}>{children}</AppShell>
+  const displayName =
+    (user.user_metadata?.full_name as string | undefined) ?? user.email!.split('@')[0]
+  await upsertUserProfile(user.email!, displayName)
+
+  return <>{children}</>
 }

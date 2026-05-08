@@ -1,17 +1,22 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import type { User } from '@supabase/supabase-js'
-import type { Station, AppSettings } from '@/lib/types'
+import type { Station, AppSettings, Department, UserRole } from '@/lib/types'
 import { DEFAULT_SKILL_LABELS, DEFAULT_CERT_LABELS, DEFAULT_COMPETENCY_COLORS } from '@/lib/types'
-import { upsertStation, deleteStation, generateId, upsertSetting } from '@/lib/db'
+import {
+  upsertStation,
+  deleteStation,
+  reorderStations,
+  generateId,
+  upsertSetting,
+  createDepartment,
+  deleteDepartment,
+} from '@/lib/db'
 
-interface NavItem {
-  href: string
-  label: string
-  icon: string
-}
+interface NavItem { href: string; label: string; icon: string }
 
 interface SidebarProps {
   navItems: NavItem[]
@@ -19,9 +24,16 @@ interface SidebarProps {
   stations: Station[]
   settings: AppSettings
   user: User
+  userRole: UserRole
+  departments: Department[]
+  activeDepartment: Department | null
+  activeDeptId: string
   onSignOut: () => void
   onStationsChange: () => Promise<void>
   onSettingsChange: (s: AppSettings) => void
+  onDepartmentsChange: () => Promise<void>
+  collapsed: boolean
+  onToggleCollapsed: () => void
 }
 
 export default function Sidebar({
@@ -30,12 +42,35 @@ export default function Sidebar({
   stations,
   settings,
   user,
+  userRole,
+  departments,
+  activeDepartment,
+  activeDeptId,
   onSignOut,
   onStationsChange,
   onSettingsChange,
+  onDepartmentsChange,
+  collapsed,
+  onToggleCollapsed,
 }: SidebarProps) {
+  const router = useRouter()
+  const isAdmin = userRole === 'admin' || userRole === 'superadmin'
+  const isSuperAdmin = userRole === 'superadmin'
+
+  // Panel open states
   const [stationsOpen, setStationsOpen] = useState(true)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [deptsOpen, setDeptsOpen] = useState(false)
+
+  // Station drag-to-reorder
+  const [localStations, setLocalStations] = useState(stations)
+  const isDraggingStn = useRef(false)
+  const [dragStnIdx, setDragStnIdx] = useState<number | null>(null)
+  const [dragOverStnIdx, setDragOverStnIdx] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (!isDraggingStn.current) setLocalStations(stations)
+  }, [stations])
 
   // Add station form
   const [newName, setNewName] = useState('')
@@ -44,36 +79,86 @@ export default function Sidebar({
   const [newHeadcount, setNewHeadcount] = useState(1)
   const [adding, setAdding] = useState(false)
 
+  // Edit station
+  const [editingStationId, setEditingStationId] = useState<string | null>(null)
+  const [editName, setEditName] = useState('')
+  const [editSkill, setEditSkill] = useState(0)
+  const [editCert, setEditCert] = useState(0)
+  const [editHeadcount, setEditHeadcount] = useState(1)
+  const [savingStation, setSavingStation] = useState(false)
+
   // Settings form
-  const [localSkillLabels, setLocalSkillLabels] = useState<Record<number, string>>(() => ({
-    ...settings.skillLabels,
-  }))
-  const [localCertLabels, setLocalCertLabels] = useState<Record<number, string>>(() => ({
-    ...settings.certLabels,
-  }))
-  const [localColors, setLocalColors] = useState<Record<number, string>>(() => ({
-    ...settings.competencyColors,
-  }))
+  const [localSkillLabels, setLocalSkillLabels] = useState<Record<number, string>>(() => ({ ...settings.skillLabels }))
+  const [localCertLabels, setLocalCertLabels] = useState<Record<number, string>>(() => ({ ...settings.certLabels }))
+  const [localColors, setLocalColors] = useState<Record<number, string>>(() => ({ ...settings.competencyColors }))
   const [saving, setSaving] = useState(false)
+
+  // Add department form
+  const [newDeptName, setNewDeptName] = useState('')
+  const [addingDept, setAddingDept] = useState(false)
+
+  // Sync local settings when dept changes
+  useEffect(() => {
+    setLocalSkillLabels({ ...settings.skillLabels })
+    setLocalCertLabels({ ...settings.certLabels })
+    setLocalColors({ ...settings.competencyColors })
+  }, [settings])
+
+  // Derived sorted level arrays
+  const skillLevels = Object.keys(localSkillLabels).map(Number).sort((a, b) => a - b)
+  const certLevels = Object.keys(localCertLabels).map(Number).sort((a, b) => a - b)
+  const settingsSkillLevels = Object.keys(settings.skillLabels).map(Number).sort((a, b) => a - b)
+  const settingsCertLevels = Object.keys(settings.certLabels).map(Number).sort((a, b) => a - b)
+
+  const handleStnDragStart = (i: number) => { isDraggingStn.current = true; setDragStnIdx(i) }
+  const handleStnDragOver = (e: React.DragEvent, i: number) => { e.preventDefault(); setDragOverStnIdx(i) }
+  const handleStnDrop = async (i: number) => {
+    if (dragStnIdx === null || dragStnIdx === i) { isDraggingStn.current = false; setDragStnIdx(null); setDragOverStnIdx(null); return }
+    const next = [...localStations]
+    const [moved] = next.splice(dragStnIdx, 1)
+    next.splice(i, 0, moved)
+    setLocalStations(next)
+    isDraggingStn.current = false
+    setDragStnIdx(null)
+    setDragOverStnIdx(null)
+    await reorderStations(next.map((s) => s.id))
+  }
 
   const handleAddStation = async () => {
     if (!newName.trim()) return
     setAdding(true)
     try {
-      await upsertStation({
-        id: generateId('stn'),
-        name: newName.trim(),
-        required_skill_level: newSkill,
-        required_certification: newCert,
-        required_headcount: newHeadcount,
-      })
-      setNewName('')
-      setNewSkill(0)
-      setNewCert(0)
-      setNewHeadcount(1)
+      await upsertStation(
+        { id: generateId('stn'), name: newName.trim(), required_skill_level: newSkill, required_certification: newCert, required_headcount: newHeadcount },
+        activeDeptId,
+      )
+      setNewName(''); setNewSkill(0); setNewCert(0); setNewHeadcount(1)
       await onStationsChange()
     } finally {
       setAdding(false)
+    }
+  }
+
+  const handleStartEditStation = (s: Station) => {
+    setEditingStationId(s.id)
+    setEditName(s.name)
+    setEditSkill(s.required_skill_level)
+    setEditCert(s.required_certification)
+    setEditHeadcount(s.required_headcount)
+  }
+
+  const handleSaveStation = async () => {
+    if (!editName.trim() || !editingStationId) return
+    setSavingStation(true)
+    try {
+      await upsertStation(
+        { id: editingStationId, name: editName.trim(), required_skill_level: editSkill, required_certification: editCert, required_headcount: editHeadcount },
+        activeDeptId,
+      )
+      setEditingStationId(null)
+      await onStationsChange()
+    } finally {
+      setSavingStation(false)
     }
   }
 
@@ -87,53 +172,150 @@ export default function Sidebar({
     setSaving(true)
     try {
       await Promise.all([
-        upsertSetting('skill_labels', localSkillLabels),
-        upsertSetting('cert_labels', localCertLabels),
-        upsertSetting('competency_colors', localColors),
+        upsertSetting('skill_labels', localSkillLabels, activeDeptId),
+        upsertSetting('cert_labels', localCertLabels, activeDeptId),
+        upsertSetting('competency_colors', localColors, activeDeptId),
       ])
-      onSettingsChange({
-        skillLabels: { ...localSkillLabels },
-        certLabels: { ...localCertLabels },
-        competencyColors: { ...localColors },
-      })
+      onSettingsChange({ skillLabels: { ...localSkillLabels }, certLabels: { ...localCertLabels }, competencyColors: { ...localColors } })
     } finally {
       setSaving(false)
     }
   }
 
   const handleResetSettings = async () => {
-    const reset = {
-      skillLabels: { ...DEFAULT_SKILL_LABELS },
-      certLabels: { ...DEFAULT_CERT_LABELS },
-      competencyColors: { ...DEFAULT_COMPETENCY_COLORS },
-    }
+    const reset = { skillLabels: { ...DEFAULT_SKILL_LABELS }, certLabels: { ...DEFAULT_CERT_LABELS }, competencyColors: { ...DEFAULT_COMPETENCY_COLORS } }
     setLocalSkillLabels({ ...DEFAULT_SKILL_LABELS })
     setLocalCertLabels({ ...DEFAULT_CERT_LABELS })
     setLocalColors({ ...DEFAULT_COMPETENCY_COLORS })
     await Promise.all([
-      upsertSetting('skill_labels', reset.skillLabels),
-      upsertSetting('cert_labels', reset.certLabels),
-      upsertSetting('competency_colors', reset.competencyColors),
+      upsertSetting('skill_labels', reset.skillLabels, activeDeptId),
+      upsertSetting('cert_labels', reset.certLabels, activeDeptId),
+      upsertSetting('competency_colors', reset.competencyColors, activeDeptId),
     ])
     onSettingsChange(reset)
   }
 
+  const handleAddSkillLevel = () => {
+    const next = Math.max(...skillLevels) + 1
+    setLocalSkillLabels((p) => ({ ...p, [next]: `Level ${next}` }))
+    setLocalColors((p) => ({ ...p, [next]: '#B8D4F8' }))
+  }
+
+  const handleRemoveSkillLevel = (l: number) => {
+    if (l === 0) return
+    setLocalSkillLabels((p) => { const n = { ...p }; delete n[l]; return n })
+    setLocalColors((p) => { const n = { ...p }; delete n[l]; return n })
+  }
+
+  const handleAddCertLevel = () => {
+    const next = Math.max(...certLevels) + 1
+    setLocalCertLabels((p) => ({ ...p, [next]: `Level ${next}` }))
+  }
+
+  const handleRemoveCertLevel = (l: number) => {
+    if (l === 0) return
+    setLocalCertLabels((p) => { const n = { ...p }; delete n[l]; return n })
+  }
+
+  const handleAddDepartment = async () => {
+    if (!newDeptName.trim()) return
+    setAddingDept(true)
+    try {
+      await createDepartment(newDeptName.trim())
+      setNewDeptName('')
+      await onDepartmentsChange()
+    } finally {
+      setAddingDept(false)
+    }
+  }
+
+  const handleDeleteDepartment = async (dept: Department) => {
+    if (!confirm(`Delete "${dept.name}"? This will permanently remove all its stations and settings. Employee history is preserved.`)) return
+    await deleteDepartment(dept.id)
+    await onDepartmentsChange()
+    if (dept.id === activeDeptId) router.push('/')
+  }
+
+  // ---- Collapsed view ----
+
+  if (collapsed) {
+    return (
+      <div className="flex flex-col h-full items-center py-3 gap-1">
+        <button
+          onClick={onToggleCollapsed}
+          title="Expand sidebar"
+          className="w-10 h-10 flex items-center justify-center rounded-lg text-gray-400 hover:text-white hover:bg-white/10 transition-colors mb-1"
+        >
+          <span className="text-lg">🏭</span>
+        </button>
+
+        {navItems.map((item) => (
+          <Link
+            key={item.href}
+            href={item.href}
+            title={item.label}
+            className={`w-10 h-10 flex items-center justify-center rounded-lg text-lg transition-colors ${
+              pathname.startsWith(item.href)
+                ? 'bg-white/10 text-white'
+                : 'text-gray-400 hover:bg-white/5 hover:text-white'
+            }`}
+          >
+            {item.icon}
+          </Link>
+        ))}
+
+        <div className="mt-auto">
+          <button
+            onClick={onSignOut}
+            title="Sign out"
+            className="w-10 h-10 flex items-center justify-center rounded-lg text-gray-500 hover:text-white hover:bg-white/10 transition-colors text-sm"
+          >
+            ↪
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // ---- Expanded view ----
+
   return (
     <div className="flex flex-col h-full">
       {/* Logo */}
-      <div className="px-5 py-5 border-b border-gray-800">
+      <div className="px-5 py-4 border-b border-gray-800">
         <div className="flex items-center gap-2">
           <span className="text-xl">🏭</span>
-          <span className="font-semibold text-sm leading-tight">
+          <span className="font-semibold text-sm leading-tight flex-1">
             Rotation &amp; Safety
             <br />
             <span className="text-gray-400 text-xs font-normal">Management System</span>
           </span>
+          <button
+            onClick={onToggleCollapsed}
+            title="Collapse sidebar"
+            className="shrink-0 w-6 h-6 flex items-center justify-center rounded text-gray-500 hover:text-white hover:bg-white/10 transition-colors text-xs"
+          >
+            ‹
+          </button>
         </div>
       </div>
 
+      {/* Department switcher */}
+      <div className="px-4 py-3 border-b border-gray-800">
+        <label className="text-xs text-gray-500 uppercase tracking-wider">Department</label>
+        <select
+          value={activeDeptId}
+          onChange={(e) => router.push(`/${e.target.value}/matrix`)}
+          className="mt-1 w-full bg-gray-800 text-white text-sm rounded-lg px-3 py-2 border border-gray-600 focus:outline-none focus:border-gray-400"
+        >
+          {departments.map((d) => (
+            <option key={d.id} value={d.id}>{d.name}</option>
+          ))}
+        </select>
+      </div>
+
       {/* Nav */}
-      <nav className="px-3 py-4 space-y-0.5">
+      <nav className="px-3 py-3 space-y-0.5">
         {navItems.map((item) => (
           <Link
             key={item.href}
@@ -151,95 +333,113 @@ export default function Sidebar({
       </nav>
 
       <div className="flex-1 overflow-y-auto px-3 pb-4 space-y-2">
+
         {/* Stations */}
         <div className="border border-gray-700 rounded-lg overflow-hidden">
           <button
             onClick={() => setStationsOpen((o) => !o)}
             className="w-full flex items-center justify-between px-3 py-2.5 text-sm font-medium text-gray-300 hover:text-white"
           >
-            <span>🏭 Stations ({stations.length})</span>
+            <span>🏭 Stations ({localStations.length})</span>
             <span className="text-gray-500">{stationsOpen ? '▲' : '▼'}</span>
           </button>
-
           {stationsOpen && (
             <div className="px-3 pb-3 space-y-3 border-t border-gray-700 pt-3">
-              {/* Existing stations */}
-              {stations.length > 0 && (
+              {localStations.length > 0 && (
                 <div className="space-y-1">
-                  {stations.map((s) => (
+                  {localStations.map((s, i) => (
                     <div
                       key={s.id}
-                      className="flex items-center justify-between text-xs text-gray-400 group"
+                      draggable={editingStationId !== s.id}
+                      onDragStart={() => handleStnDragStart(i)}
+                      onDragOver={(e) => handleStnDragOver(e, i)}
+                      onDrop={() => handleStnDrop(i)}
+                      onDragEnd={() => { isDraggingStn.current = false; setDragStnIdx(null); setDragOverStnIdx(null) }}
+                      className={dragOverStnIdx === i && dragStnIdx !== i ? 'border-t border-indigo-500' : ''}
                     >
-                      <span className="truncate">{s.name}</span>
-                      <button
-                        onClick={() => handleDeleteStation(s.id)}
-                        className="ml-2 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-300 transition-opacity"
-                      >
-                        ✕
-                      </button>
+                      {editingStationId === s.id ? (
+                        <div className="space-y-2 bg-gray-800/50 rounded p-2">
+                          <input
+                            type="text" value={editName} onChange={(e) => setEditName(e.target.value)}
+                            autoFocus
+                            className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-gray-400"
+                          />
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <div>
+                              <label className="text-xs text-gray-500">Competency</label>
+                              <select value={editSkill} onChange={(e) => setEditSkill(Number(e.target.value))}
+                                className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none">
+                                {settingsSkillLevels.map((l) => <option key={l} value={l}>{l} - {settings.skillLabels[l]}</option>)}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="text-xs text-gray-500">Certification</label>
+                              <select value={editCert} onChange={(e) => setEditCert(Number(e.target.value))}
+                                className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none">
+                                {settingsCertLevels.map((l) => <option key={l} value={l}>{l} - {settings.certLabels[l]}</option>)}
+                              </select>
+                            </div>
+                          </div>
+                          <div>
+                            <label className="text-xs text-gray-500">Headcount</label>
+                            <input type="number" min={1} max={20} value={editHeadcount} onChange={(e) => setEditHeadcount(Number(e.target.value))}
+                              className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none" />
+                          </div>
+                          <div className="flex gap-1.5">
+                            <button onClick={handleSaveStation} disabled={savingStation || !editName.trim()}
+                              className="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-medium rounded py-1 transition-colors">
+                              {savingStation ? 'Saving…' : 'Save'}
+                            </button>
+                            <button onClick={() => setEditingStationId(null)}
+                              className="flex-1 bg-gray-700 hover:bg-gray-600 text-white text-xs font-medium rounded py-1 transition-colors">
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between text-xs text-gray-400 group py-0.5">
+                          <span className="mr-1 cursor-grab active:cursor-grabbing select-none text-gray-600">⠿</span>
+                          <span className="truncate flex-1">{s.name}</span>
+                          <div className="flex items-center gap-1 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button onClick={() => handleStartEditStation(s)} className="text-gray-400 hover:text-white">✎</button>
+                            <button onClick={() => handleDeleteStation(s.id)} className="text-red-400 hover:text-red-300">✕</button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
               )}
-
-              {/* Add station form */}
               <div className="space-y-2 pt-1 border-t border-gray-700">
                 <p className="text-xs text-gray-500 font-medium">Add Station</p>
                 <input
-                  type="text"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  placeholder="Station name"
+                  type="text" value={newName} onChange={(e) => setNewName(e.target.value)}
+                  placeholder="Station name" onKeyDown={(e) => e.key === 'Enter' && handleAddStation()}
                   className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-gray-400"
-                  onKeyDown={(e) => e.key === 'Enter' && handleAddStation()}
                 />
                 <div className="grid grid-cols-2 gap-1.5">
                   <div>
                     <label className="text-xs text-gray-500">Competency</label>
-                    <select
-                      value={newSkill}
-                      onChange={(e) => setNewSkill(Number(e.target.value))}
-                      className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none"
-                    >
-                      {[0, 1, 2, 3, 4].map((l) => (
-                        <option key={l} value={l}>
-                          {l} - {settings.skillLabels[l]}
-                        </option>
-                      ))}
+                    <select value={newSkill} onChange={(e) => setNewSkill(Number(e.target.value))}
+                      className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none">
+                      {settingsSkillLevels.map((l) => <option key={l} value={l}>{l} - {settings.skillLabels[l]}</option>)}
                     </select>
                   </div>
                   <div>
                     <label className="text-xs text-gray-500">Certification</label>
-                    <select
-                      value={newCert}
-                      onChange={(e) => setNewCert(Number(e.target.value))}
-                      className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none"
-                    >
-                      {[0, 1, 2].map((l) => (
-                        <option key={l} value={l}>
-                          {l} - {settings.certLabels[l]}
-                        </option>
-                      ))}
+                    <select value={newCert} onChange={(e) => setNewCert(Number(e.target.value))}
+                      className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none">
+                      {settingsCertLevels.map((l) => <option key={l} value={l}>{l} - {settings.certLabels[l]}</option>)}
                     </select>
                   </div>
                 </div>
                 <div>
                   <label className="text-xs text-gray-500">Headcount</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={20}
-                    value={newHeadcount}
-                    onChange={(e) => setNewHeadcount(Number(e.target.value))}
-                    className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-xs text-white focus:outline-none"
-                  />
+                  <input type="number" min={1} max={20} value={newHeadcount} onChange={(e) => setNewHeadcount(Number(e.target.value))}
+                    className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-xs text-white focus:outline-none" />
                 </div>
-                <button
-                  onClick={handleAddStation}
-                  disabled={adding || !newName.trim()}
-                  className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-medium rounded py-1.5 transition-colors"
-                >
+                <button onClick={handleAddStation} disabled={adding || !newName.trim()}
+                  className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-medium rounded py-1.5 transition-colors">
                   {adding ? 'Adding…' : '+ Add Station'}
                 </button>
               </div>
@@ -249,102 +449,125 @@ export default function Sidebar({
 
         {/* Settings */}
         <div className="border border-gray-700 rounded-lg overflow-hidden">
-          <button
-            onClick={() => setSettingsOpen((o) => !o)}
-            className="w-full flex items-center justify-between px-3 py-2.5 text-sm font-medium text-gray-300 hover:text-white"
-          >
+          <button onClick={() => setSettingsOpen((o) => !o)}
+            className="w-full flex items-center justify-between px-3 py-2.5 text-sm font-medium text-gray-300 hover:text-white">
             <span>⚙️ Settings</span>
             <span className="text-gray-500">{settingsOpen ? '▲' : '▼'}</span>
           </button>
-
           {settingsOpen && (
             <div className="px-3 pb-3 space-y-4 border-t border-gray-700 pt-3">
-              {/* Skill labels */}
               <div>
-                <p className="text-xs text-gray-400 font-medium mb-2">Competency Labels</p>
-                {[0, 1, 2, 3, 4].map((l) => (
-                  <div key={l} className="flex items-center gap-2 mb-1">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs text-gray-400 font-medium">Competency Labels</p>
+                  <button onClick={handleAddSkillLevel} className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors">+ Add</button>
+                </div>
+                {skillLevels.map((l) => (
+                  <div key={l} className="flex items-center gap-2 mb-1 group">
                     <span className="text-xs text-gray-500 w-5">{l}</span>
-                    <input
-                      value={localSkillLabels[l] ?? ''}
-                      onChange={(e) =>
-                        setLocalSkillLabels((prev) => ({ ...prev, [l]: e.target.value }))
-                      }
-                      className="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none"
-                    />
+                    <input value={localSkillLabels[l] ?? ''} onChange={(e) => setLocalSkillLabels((p) => ({ ...p, [l]: e.target.value }))}
+                      className="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none" />
+                    {l > 0 && (
+                      <button onClick={() => handleRemoveSkillLevel(l)} className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-300 text-xs transition-opacity">✕</button>
+                    )}
                   </div>
                 ))}
               </div>
-
-              {/* Cert labels */}
               <div>
-                <p className="text-xs text-gray-400 font-medium mb-2">Certification Labels</p>
-                {[0, 1, 2].map((l) => (
-                  <div key={l} className="flex items-center gap-2 mb-1">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs text-gray-400 font-medium">Certification Labels</p>
+                  <button onClick={handleAddCertLevel} className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors">+ Add</button>
+                </div>
+                {certLevels.map((l) => (
+                  <div key={l} className="flex items-center gap-2 mb-1 group">
                     <span className="text-xs text-gray-500 w-5">{l}</span>
-                    <input
-                      value={localCertLabels[l] ?? ''}
-                      onChange={(e) =>
-                        setLocalCertLabels((prev) => ({ ...prev, [l]: e.target.value }))
-                      }
-                      className="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none"
-                    />
+                    <input value={localCertLabels[l] ?? ''} onChange={(e) => setLocalCertLabels((p) => ({ ...p, [l]: e.target.value }))}
+                      className="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none" />
+                    {l > 0 && (
+                      <button onClick={() => handleRemoveCertLevel(l)} className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-300 text-xs transition-opacity">✕</button>
+                    )}
                   </div>
                 ))}
               </div>
-
-              {/* Colors */}
               <div>
                 <p className="text-xs text-gray-400 font-medium mb-2">Competency Colors</p>
-                {[0, 1, 2, 3, 4].map((l) => (
+                {skillLevels.map((l) => (
                   <div key={l} className="flex items-center gap-2 mb-1">
                     <span className="text-xs text-gray-500 w-5">{l}</span>
-                    <input
-                      type="color"
-                      value={localColors[l] ?? '#E8E8E8'}
-                      onChange={(e) =>
-                        setLocalColors((prev) => ({ ...prev, [l]: e.target.value }))
-                      }
-                      className="w-8 h-6 rounded border border-gray-600 cursor-pointer bg-transparent"
-                    />
-                    <span
-                      className="flex-1 h-6 rounded text-xs flex items-center px-2"
-                      style={{ backgroundColor: localColors[l] }}
-                    >
+                    <input type="color" value={localColors[l] ?? '#E8E8E8'} onChange={(e) => setLocalColors((p) => ({ ...p, [l]: e.target.value }))}
+                      className="w-8 h-6 rounded border border-gray-600 cursor-pointer bg-transparent" />
+                    <span className="flex-1 h-6 rounded text-xs flex items-center px-2" style={{ backgroundColor: localColors[l] }}>
                       {localSkillLabels[l]}
                     </span>
                   </div>
                 ))}
               </div>
-
               <div className="flex gap-2">
-                <button
-                  onClick={handleSaveSettings}
-                  disabled={saving}
-                  className="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-medium rounded py-1.5 transition-colors"
-                >
+                <button onClick={handleSaveSettings} disabled={saving}
+                  className="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-medium rounded py-1.5 transition-colors">
                   {saving ? 'Saving…' : 'Save'}
                 </button>
-                <button
-                  onClick={handleResetSettings}
-                  className="flex-1 bg-gray-700 hover:bg-gray-600 text-white text-xs font-medium rounded py-1.5 transition-colors"
-                >
+                <button onClick={handleResetSettings}
+                  className="flex-1 bg-gray-700 hover:bg-gray-600 text-white text-xs font-medium rounded py-1.5 transition-colors">
                   Reset
                 </button>
               </div>
             </div>
           )}
         </div>
+
+        {/* Departments (admin only) */}
+        {isAdmin && (
+          <div className="border border-gray-700 rounded-lg overflow-hidden">
+            <button onClick={() => setDeptsOpen((o) => !o)}
+              className="w-full flex items-center justify-between px-3 py-2.5 text-sm font-medium text-gray-300 hover:text-white">
+              <span>🏢 Departments</span>
+              <span className="text-gray-500">{deptsOpen ? '▲' : '▼'}</span>
+            </button>
+            {deptsOpen && (
+              <div className="px-3 pb-3 space-y-3 border-t border-gray-700 pt-3">
+                {departments.length > 0 && (
+                  <div className="space-y-1">
+                    {departments.map((d) => (
+                      <div key={d.id} className="flex items-center justify-between text-xs text-gray-400 group">
+                        <span className={`truncate ${d.id === activeDeptId ? 'text-white font-medium' : ''}`}>{d.name}</span>
+                        {departments.length > 1 && (
+                          <button onClick={() => handleDeleteDepartment(d)}
+                            className="ml-2 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-300 transition-opacity">✕</button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="space-y-2 pt-1 border-t border-gray-700">
+                  <p className="text-xs text-gray-500 font-medium">Add Department</p>
+                  <input type="text" value={newDeptName} onChange={(e) => setNewDeptName(e.target.value)}
+                    placeholder="Department name" onKeyDown={(e) => e.key === 'Enter' && handleAddDepartment()}
+                    className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-gray-400" />
+                  <button onClick={handleAddDepartment} disabled={addingDept || !newDeptName.trim()}
+                    className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-medium rounded py-1.5 transition-colors">
+                    {addingDept ? 'Adding…' : '+ Add Department'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
       </div>
 
       {/* User footer */}
       <div className="px-4 py-3 border-t border-gray-800">
         <div className="flex items-center justify-between">
-          <span className="text-xs text-gray-400 truncate">{user.email}</span>
-          <button
-            onClick={onSignOut}
-            className="text-xs text-gray-500 hover:text-white transition-colors ml-2 shrink-0"
-          >
+          <div className="min-w-0">
+            <span className="text-xs text-gray-400 truncate block">{user.email}</span>
+            <span className={`text-xs ${
+              isSuperAdmin ? 'text-amber-400' : userRole === 'admin' ? 'text-indigo-400' : 'text-gray-600'
+            }`}>
+              {userRole === 'superadmin' ? 'Superadmin' : userRole === 'admin' ? 'Admin' : 'Manager'}
+            </span>
+          </div>
+          <button onClick={onSignOut}
+            className="text-xs text-gray-500 hover:text-white transition-colors ml-2 shrink-0">
             Sign out
           </button>
         </div>

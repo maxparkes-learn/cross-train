@@ -1,39 +1,44 @@
-import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { createServerClient } from '@supabase/ssr'
+import { NextResponse, type NextRequest } from 'next/server'
 
-export async function GET(request: Request) {
-  const { searchParams, origin } = new URL(request.url)
-  const code = searchParams.get('code')
-  const errorParam = searchParams.get('error')
-  const errorDescription = searchParams.get('error_description')
+export async function GET(request: NextRequest) {
+  const requestUrl = new URL(request.url)
+  const code = requestUrl.searchParams.get('code')
+  const origin = requestUrl.origin
 
-  // Supabase/Google sent back an error directly
-  if (errorParam) {
-    const msg = encodeURIComponent(errorDescription ?? errorParam)
-    return NextResponse.redirect(`${origin}/auth/login?error=auth_failed&detail=${msg}`)
+  if (!code) {
+    return NextResponse.redirect(
+      `${origin}/auth/login?error=auth_failed&detail=${encodeURIComponent('No code in callback URL')}`
+    )
   }
 
-  if (code) {
-    const supabase = await createClient()
-    const { error } = await supabase.auth.exchangeCodeForSession(code)
+  const redirectTo = NextResponse.redirect(`${origin}/`)
 
-    if (!error) {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser()
-
-      const allowedDomain = process.env.NEXT_PUBLIC_ALLOWED_DOMAIN ?? 'clutch.ca'
-      if (!user?.email?.toLowerCase().endsWith(`@${allowedDomain}`)) {
-        await supabase.auth.signOut()
-        return NextResponse.redirect(`${origin}/auth/login?error=unauthorized_domain`)
-      }
-
-      return NextResponse.redirect(`${origin}/matrix`)
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        get(name: string) {
+          return request.cookies.get(name)?.value
+        },
+        set(name: string, value: string, options: Record<string, unknown>) {
+          redirectTo.cookies.set(name, value, options as never)
+        },
+        remove(name: string, options: Record<string, unknown>) {
+          redirectTo.cookies.set(name, '', options as never)
+        },
+      },
     }
+  )
 
-    const msg = encodeURIComponent(error.message)
-    return NextResponse.redirect(`${origin}/auth/login?error=auth_failed&detail=${msg}`)
+  const { error } = await supabase.auth.exchangeCodeForSession(code)
+
+  if (error) {
+    return NextResponse.redirect(
+      `${origin}/auth/login?error=auth_failed&detail=${encodeURIComponent(error.message)}`
+    )
   }
 
-  return NextResponse.redirect(`${origin}/auth/login?error=auth_failed&detail=no_code`)
+  return redirectTo
 }

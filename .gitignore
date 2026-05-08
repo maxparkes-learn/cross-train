@@ -7,3 +7,4 @@ data/current_data.json
 .streamlit/*
 !.streamlit/config.toml
 .claude/
+.vercel
