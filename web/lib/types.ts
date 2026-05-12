@@ -22,6 +22,7 @@ export interface Employee {
   certification_level: number
   is_absent: boolean
   is_archived: boolean
+  is_lead: boolean
   department_id: string
   sort_order: number
   station_competencies: Record<string, number>
@@ -94,9 +95,9 @@ export interface CrossTrainingAssignment {
 
 export const DEFAULT_SKILL_LABELS: Record<number, string> = {
   0: 'N/A',
-  1: 'General',
-  2: 'Intermediate',
-  3: 'Licensed',
+  1: 'In Training',
+  2: 'Supervised',
+  3: 'Independent',
   4: 'Trainer',
 }
 

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useApp } from '@/components/AppShell'
 import {
   generateSchedule,
@@ -40,6 +40,55 @@ export default function SchedulePage() {
   const [finalizeMsg, setFinalizeMsg] = useState('')
   const [templateSaving, setTemplateSaving] = useState(false)
   const [templateMsg, setTemplateMsg] = useState('')
+  const [finalized, setFinalized] = useState(false)
+
+  const draftLoaded = useRef(false)
+  const draftSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Load draft on mount — restore today's in-progress schedule
+  useEffect(() => {
+    if (!activeDepartment?.id) return
+    fetchSetting('schedule_draft', activeDepartment.id).then(v => {
+      if (v && typeof v === 'object') {
+        const draft = v as {
+          date: string
+          schedule: Record<string, Assignment> | null
+          activeScenario: string
+          editMode: boolean
+          gridAssignments: Record<string, string>
+          ctAssignments: CrossTrainingAssignment[]
+          finalized: boolean
+        }
+        if (draft.date === todayStr() && draft.schedule !== null) {
+          setSchedule(draft.schedule)
+          setActiveScenario(draft.activeScenario ?? '')
+          setEditMode(draft.editMode ?? false)
+          setGridAssignments(draft.gridAssignments ?? {})
+          setCtAssignments(draft.ctAssignments ?? [])
+          setFinalized(draft.finalized ?? false)
+        }
+      }
+      draftLoaded.current = true
+    })
+  }, [activeDepartment?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-save draft whenever schedule state changes
+  useEffect(() => {
+    if (!draftLoaded.current || !activeDepartment?.id) return
+    if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current)
+    draftSaveTimer.current = setTimeout(() => {
+      upsertSetting('schedule_draft', {
+        date: todayStr(),
+        schedule,
+        activeScenario,
+        editMode,
+        gridAssignments,
+        ctAssignments,
+        finalized,
+      }, activeDepartment.id)
+    }, 800)
+    return () => { if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current) }
+  }, [schedule, activeScenario, editMode, gridAssignments, ctAssignments, finalized, activeDepartment?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const absentIds = new Set(employees.filter((e) => e.is_absent).map((e) => e.id))
   const stationsMap = new Map(stations.map((s) => [s.id, s]))
@@ -74,12 +123,24 @@ export default function SchedulePage() {
     )
   }
 
+  const handleReset = () => {
+    setSchedule(null)
+    setActiveScenario('')
+    setEditMode(false)
+    setGridAssignments({})
+    setCtAssignments([])
+    setFinalized(false)
+    setFinalizeMsg('')
+    setTemplateMsg('')
+  }
+
   const handleAssignManually = () => {
     setSchedule(buildEmptySchedule())
     setActiveScenario('Manual')
     setEditMode(true)
     setGridAssignments({})
     setCtAssignments([])
+    setFinalized(false)
     setFinalizeMsg('')
     setTemplateMsg('')
   }
@@ -96,6 +157,7 @@ export default function SchedulePage() {
       setEditMode(false)
       setGridAssignments({})
       setCtAssignments([])
+      setFinalized(false)
       await insertAuditLog(user.email ?? '', 'Generated schedule', scenarioName)
     } finally {
       setGenerating(false)
@@ -104,8 +166,12 @@ export default function SchedulePage() {
 
   const handleEnterEdit = () => {
     if (!schedule) return
+    if (finalized && !confirm(
+      `This schedule was already finalized for ${finalizeDate}. Editing will require re-finalizing to update the history log. Continue?`
+    )) return
     setGridAssignments(scheduleToGrid(schedule))
     setEditMode(true)
+    setFinalized(false)
   }
 
   const handleApplyGrid = () => {
@@ -156,6 +222,7 @@ export default function SchedulePage() {
     setEditMode(true)
     setGridAssignments(filtered)
     setCtAssignments([])
+    setFinalized(false)
     setFinalizeMsg('')
   }
 
@@ -182,9 +249,8 @@ export default function SchedulePage() {
       await upsertAssignmentLogs(assignLogs)
       if (ctLogs.length > 0) await upsertCrossTrainingLogs(ctLogs)
       await insertAuditLog(user.email ?? '', 'Finalized day', `${finalizeDate} — ${assignLogs.length} assignments`)
-      setFinalizeMsg(`Day finalized: ${assignLogs.length} assignments recorded for ${finalizeDate}`)
-      setSchedule(null)
-      setCtAssignments([])
+      setFinalized(true)
+      setFinalizeMsg('')
     } catch (e) {
       setFinalizeMsg(`Error: ${String(e)}`)
     } finally {
@@ -278,6 +344,11 @@ export default function SchedulePage() {
           <button onClick={handleLoadDefault} className="border border-gray-300 hover:bg-gray-50 text-gray-700 text-sm font-medium px-5 py-2 rounded-lg transition-colors">
             Load Default ↓
           </button>
+          {schedule && (
+            <button onClick={handleReset} className="border border-red-200 hover:bg-red-50 text-red-500 text-sm font-medium px-5 py-2 rounded-lg transition-colors ml-auto">
+              Reset ×
+            </button>
+          )}
         </div>
         <div className="flex items-center justify-between mt-2">
           <p className="text-xs text-gray-500">{SCENARIO_DESCRIPTIONS[scenarioName]}</p>
@@ -287,6 +358,15 @@ export default function SchedulePage() {
 
       {schedule && (
         <>
+          {/* Finalized banner */}
+          {finalized && (
+            <div className="flex items-center gap-2 px-4 py-2.5 bg-green-50 border border-green-200 rounded-xl text-sm text-green-700">
+              <span className="text-green-500 font-bold">✓</span>
+              <span>Finalized for <strong>{finalizeDate}</strong> — {Object.values(schedule).reduce((n, a) => n + a.assigned_employee_ids.length, 0)} assignments recorded.</span>
+              <span className="ml-auto text-xs text-green-500">Click &quot;Edit Assignments&quot; to make changes</span>
+            </div>
+          )}
+
           {/* Metrics */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             {[
@@ -561,7 +641,9 @@ export default function SchedulePage() {
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-4">
               <div>
                 <h2 className="font-semibold text-gray-900">Finalize Day</h2>
-                <p className="text-xs text-gray-500">Commit today&apos;s assignments to the rotation history log</p>
+                <p className="text-xs text-gray-500">
+                  {finalized ? 'Re-submit to update the history log with any changes' : 'Commit today\'s assignments to the rotation history log'}
+                </p>
               </div>
               <div className="flex flex-wrap gap-4">
                 <div>
@@ -579,7 +661,7 @@ export default function SchedulePage() {
                 </div>
               )}
               <button onClick={handleFinalizeDay} disabled={finalizing} className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors">
-                {finalizing ? 'Finalizing…' : 'Finalize Day'}
+                {finalizing ? 'Finalizing…' : finalized ? 'Re-Finalize Day' : 'Finalize Day'}
               </button>
             </div>
           )}
