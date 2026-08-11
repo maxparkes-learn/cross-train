@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useApp } from '@/components/AppShell'
 import { fetchAllEmployeesWithCompetencies, fetchAllStations } from '@/lib/db'
+import LastUpdatedCell, { type LastUpdatedInfo } from '@/components/LastUpdatedCell'
 import { DEFAULT_SKILL_LABELS, DEFAULT_COMPETENCY_COLORS } from '@/lib/types'
 import type { Employee, Station } from '@/lib/types'
 
@@ -34,7 +35,7 @@ function contrastColor(hex: string): string {
 }
 
 export default function AttentionPage() {
-  const { departments } = useApp()
+  const { departments, competencyChanges } = useApp()
 
   const [employees, setEmployees] = useState<Employee[]>([])
   const [stations, setStations] = useState<Station[]>([])
@@ -68,7 +69,7 @@ export default function AttentionPage() {
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
-  const [sort, setSort] = useState<{ col: 'name' | 'department' | 'tenure' | 'level' | 'stations'; dir: 'asc' | 'desc' }>({ col: 'name', dir: 'asc' })
+  const [sort, setSort] = useState<{ col: 'name' | 'department' | 'tenure' | 'level' | 'stations' | 'lastUpdate'; dir: 'asc' | 'desc' }>({ col: 'name', dir: 'asc' })
 
   const stationsByDept = stations.reduce<Record<string, Station[]>>((acc, s) => {
     if (!acc[s.department_id]) acc[s.department_id] = []
@@ -78,6 +79,28 @@ export default function AttentionPage() {
 
   const deptName = (id: string) => departments.find((d) => d.id === id)?.name ?? id
   const allDeptsSelected = departments.every((d) => selectedDepts.has(d.id))
+
+  // This page spans every department and never loads per-department settings, so it
+  // uses the default skill labels — consistent with the Highest Level column below.
+  const levelLabel = (level: number | null) =>
+    level === null ? 'not set' : DEFAULT_SKILL_LABELS[level] ?? `Level ${level}`
+
+  const lastUpdatedInfo = (employeeId: string): LastUpdatedInfo | null => {
+    const change = competencyChanges[employeeId]
+    if (!change) return null
+    return {
+      changedAt: change.changed_at,
+      changedByEmail: change.changed_by,
+      stationName: change.station_name,
+      oldLabel: levelLabel(change.old_level),
+      newLabel: levelLabel(change.new_level),
+    }
+  }
+
+  const lastUpdatedAt = (employeeId: string) => {
+    const change = competencyChanges[employeeId]
+    return change ? new Date(change.changed_at).getTime() : -1
+  }
   const skillLevels = Object.keys(DEFAULT_SKILL_LABELS).map(Number).sort((a, b) => a - b).filter(l => l > 0)
 
   const toggleSort = (col: typeof sort.col) => {
@@ -117,6 +140,8 @@ export default function AttentionPage() {
       else if (sort.col === 'tenure') cmp = calcMonths(a.hire_date!) - calcMonths(b.hire_date!)
       else if (sort.col === 'level') cmp = maxA - maxB
       else if (sort.col === 'stations') cmp = (deptStationsA.length ? trainedA / deptStationsA.length : 0) - (deptStationsB.length ? trainedB / deptStationsB.length : 0)
+      // Employees with no recorded change sort first ascending, as with tenure above.
+      else if (sort.col === 'lastUpdate') cmp = lastUpdatedAt(a.id) - lastUpdatedAt(b.id)
       return sort.dir === 'asc' ? cmp : -cmp
     })
 
@@ -226,6 +251,7 @@ export default function AttentionPage() {
                 <SortTh col="tenure" label="Tenure" />
                 <SortTh col="level" label="Highest Level" />
                 <SortTh col="stations" label="Stations Trained" />
+                <SortTh col="lastUpdate" label="Last Update" />
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -253,6 +279,9 @@ export default function AttentionPage() {
                       {deptStations.length > 0
                         ? `${trainedCount} of ${deptStations.length}`
                         : <span className="text-gray-300">—</span>}
+                    </td>
+                    <td className="px-4 py-3 text-gray-500 whitespace-nowrap text-xs">
+                      <LastUpdatedCell info={lastUpdatedInfo(emp.id)} />
                     </td>
                   </tr>
                 )

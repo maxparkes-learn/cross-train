@@ -18,6 +18,7 @@ import {
   removeEmployeeFromSecondaryDepartment,
   fetchAllEmployeesBasic,
 } from '@/lib/db'
+import LastUpdatedCell, { type LastUpdatedInfo } from '@/components/LastUpdatedCell'
 import type { Employee, EmployeeGroup } from '@/lib/types'
 
 interface Row {
@@ -435,7 +436,7 @@ function buildRows(employees: Employee[], stationIds: string[], currentDeptId: s
 }
 
 export default function MatrixPage() {
-  const { stations, employees, settings, refreshEmployees, user, activeDepartment, hasEditAccess, userRole, departments } = useApp()
+  const { stations, employees, settings, refreshEmployees, user, activeDepartment, hasEditAccess, userRole, departments, competencyChanges, applyCompetencyChanges } = useApp()
   const [rows, setRows] = useState<Row[]>(() =>
     buildRows(employees, stations.map((s) => s.id), activeDepartment?.id ?? ''),
   )
@@ -562,6 +563,32 @@ export default function MatrixPage() {
   const skillLevels = Object.keys(skillLabels).map(Number).sort((a, b) => a - b)
   const certLevels = Object.keys(certLabels).map(Number).sort((a, b) => a - b)
 
+  const levelLabel = (level: number | null) =>
+    level === null ? 'not set' : skillLabels[level] ?? `Level ${level}`
+
+  /**
+   * Reads straight from context rather than from `rows`, which is only rebuilt when
+   * the employee count changes and so never picks up new server fields.
+   */
+  const lastUpdatedInfo = (employeeId: string | null): LastUpdatedInfo | null => {
+    const change = employeeId ? competencyChanges[employeeId] : null
+    if (!change) return null
+    return {
+      changedAt: change.changed_at,
+      changedByEmail: change.changed_by,
+      // The snapshot, not a lookup in localStations: a shared employee's most recent
+      // change may be at a station in another department, which this page never loads.
+      stationName: change.station_name,
+      oldLabel: levelLabel(change.old_level),
+      newLabel: levelLabel(change.new_level),
+    }
+  }
+
+  const lastUpdatedAt = (employeeId: string | null) => {
+    const change = employeeId ? competencyChanges[employeeId] : null
+    return change ? new Date(change.changed_at).getTime() : -1
+  }
+
   const totalPresent = rows.filter((r) => r.id && r.isPresent).length
   const totalAbsent = rows.filter((r) => r.id && !r.isPresent).length
   const total = rows.filter((r) => r.id).length
@@ -597,6 +624,10 @@ export default function MatrixPage() {
         cmp = gA.localeCompare(gB)
       }
       else if (col === 'tenure') cmp = toMonths(a.hireDate) - toMonths(b.hireDate)
+      // Needs an explicit branch: the fallback below treats any unrecognised column
+      // as a station id, which would make this header a silent no-op. Employees with
+      // no recorded change sort first ascending, matching the tenure convention above.
+      else if (col === 'lastUpdate') cmp = lastUpdatedAt(a.id) - lastUpdatedAt(b.id)
       else cmp = (a.competencies[col] ?? 0) - (b.competencies[col] ?? 0)
       return matrixSort.dir === 'asc' ? cmp : -cmp
     })
@@ -617,7 +648,13 @@ export default function MatrixPage() {
             is_lead: updatedRow.isLead,
             group_ids: updatedRow.groupIds,
           }, updatedRow.isHomeDept ? activeDepartment!.id : undefined)
-          await upsertCompetencies(empId, updatedRow.competencies)
+          // Returns only genuinely changed stations, carrying the server's timestamp,
+          // so the Last Update cell reflects the persisted value without a refetch.
+          const changes = await upsertCompetencies(empId, updatedRow.competencies, {
+            email: user.email ?? '',
+            stations: localStations,
+          })
+          applyCompetencyChanges(changes)
           if (!updatedRow.id) {
             setRows((prev) => prev.map((r) => r === updatedRow ? { ...r, id: empId, isNew: false, dirty: false } : r))
           } else {
@@ -630,7 +667,8 @@ export default function MatrixPage() {
         }
       }, 800)
     },
-    [refreshEmployees, user.email, activeDepartment],
+    // Recreating this callback does not cancel pending saves; the timers live in a ref.
+    [refreshEmployees, user.email, activeDepartment, localStations, applyCompetencyChanges],
   )
 
   const updateRow = (index: number, patch: Partial<Row>) => {
@@ -870,6 +908,13 @@ export default function MatrixPage() {
                   </button>
                 </th>
 
+                {/* Last Update — read-only, visible to every role, like Tenure */}
+                <th className="px-3 py-2.5 text-left font-medium text-gray-600 whitespace-nowrap">
+                  <button onClick={() => toggleMatrixSort('lastUpdate')} className="hover:text-gray-900 transition-colors">
+                    Last Update{sortInd('lastUpdate')}
+                  </button>
+                </th>
+
                 {/* Certification */}
                 {!hiddenColumns.has('certification') && (
                   <th className="px-3 py-2.5 text-left font-medium text-gray-600 whitespace-nowrap min-w-[130px]">
@@ -1016,6 +1061,10 @@ export default function MatrixPage() {
                       {row.hireDate ? formatTenure(row.hireDate) : <span className="text-gray-200">—</span>}
                     </td>
 
+                    <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-400">
+                      <LastUpdatedCell info={lastUpdatedInfo(row.id)} />
+                    </td>
+
                     {!hiddenColumns.has('certification') && (
                       <td className="px-3 py-2">
                         {hasEditAccess ? (
@@ -1092,7 +1141,7 @@ export default function MatrixPage() {
               {hasEditAccess && (
                 <tr>
                   <td colSpan={
-                    4 // drag handle + employee + tenure + delete
+                    5 // drag handle + employee + tenure + last update + delete
                     + (hiddenColumns.has('present') ? 0 : 1)
                     + (hiddenColumns.has('certification') ? 0 : 1)
                     + (hiddenColumns.has('group') ? 0 : 1)

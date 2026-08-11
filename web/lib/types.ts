@@ -39,6 +39,32 @@ export interface Competency {
   level: number
 }
 
+/**
+ * One recorded change to an employee's competency at a station.
+ *
+ * station_name and department_id are snapshots taken when the change was written,
+ * not joins resolved at read time, so a row stays readable after a station is
+ * renamed or deleted.
+ *
+ * Note this is deliberately NOT a field on Employee: upsertEmployee builds its DB
+ * row by destructuring named non-column fields off the object, so any new field
+ * added to Employee gets passed straight to PostgREST and fails the write.
+ */
+export interface CompetencyChange {
+  id?: number
+  employee_id: string
+  station_id: string
+  station_name: string
+  department_id: string | null
+  old_level: number | null
+  new_level: number
+  changed_by: string
+  changed_at: string
+}
+
+/** Keyed by employee_id — their single most recent competency change. */
+export type CompetencyChangeMap = Record<string, CompetencyChange>
+
 export interface Assignment {
   station_id: string
   assigned_employee_ids: string[]

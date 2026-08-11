@@ -2,7 +2,15 @@
 
 import { createContext, useContext, useEffect, useState, useCallback } from 'react'
 import type { User } from '@supabase/supabase-js'
-import type { Station, Employee, AppSettings, Department, UserRole } from '@/lib/types'
+import type {
+  Station,
+  Employee,
+  AppSettings,
+  Department,
+  UserRole,
+  CompetencyChange,
+  CompetencyChangeMap,
+} from '@/lib/types'
 import {
   DEFAULT_SKILL_LABELS,
   DEFAULT_CERT_LABELS,
@@ -15,6 +23,7 @@ import {
   fetchDepartments,
   fetchUserDepartments,
   fetchPendingUserCount,
+  fetchLatestCompetencyChanges,
 } from '@/lib/db'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter, usePathname } from 'next/navigation'
@@ -35,6 +44,10 @@ interface AppContextValue {
   departments: Department[]
   activeDepartment: Department | null
   hasEditAccess: boolean
+  /** Each employee's most recent competency change, keyed by employee_id. */
+  competencyChanges: CompetencyChangeMap
+  /** Merge freshly written change rows so the UI reflects an edit immediately. */
+  applyCompetencyChanges: (changes: CompetencyChange[]) => void
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
@@ -66,6 +79,7 @@ export default function AppShell({
     certLabels: { ...DEFAULT_CERT_LABELS },
     competencyColors: { ...DEFAULT_COMPETENCY_COLORS },
   })
+  const [competencyChanges, setCompetencyChanges] = useState<CompetencyChangeMap>({})
   const [departments, setDepartments] = useState<Department[]>([])
   const [editDeptIds, setEditDeptIds] = useState<Set<string>>(new Set())
   const [pendingUserCount, setPendingUserCount] = useState(0)
@@ -113,15 +127,34 @@ export default function AppShell({
     setEmployees(data)
   }, [activeDeptId])
 
+  /**
+   * Merge freshly written change rows, keeping the newest per employee. Compares as
+   * dates rather than strings, so it does not depend on PostgREST's timestamp format.
+   */
+  const applyCompetencyChanges = useCallback((changes: CompetencyChange[]) => {
+    if (changes.length === 0) return
+    setCompetencyChanges((prev) => {
+      const next = { ...prev }
+      for (const c of changes) {
+        const current = next[c.employee_id]
+        if (!current || new Date(c.changed_at) >= new Date(current.changed_at)) {
+          next[c.employee_id] = c
+        }
+      }
+      return next
+    })
+  }, [])
+
   const refreshData = useCallback(async () => {
     setIsLoading(true)
-    const [s, e, cfg, allDepts, userDepts, pendingCount] = await Promise.all([
+    const [s, e, cfg, allDepts, userDepts, pendingCount, changes] = await Promise.all([
       fetchStations(activeDeptId),
       fetchEmployees(activeDeptId),
       fetchSettings(activeDeptId),
       fetchDepartments(),
       isAdmin ? Promise.resolve(null) : fetchUserDepartments(user.email!),
       isAdmin ? fetchPendingUserCount() : Promise.resolve(0),
+      fetchLatestCompetencyChanges(),
     ])
     setStations(s)
     setEmployees(e)
@@ -129,6 +162,7 @@ export default function AppShell({
     setDepartments(allDepts)
     setEditDeptIds(isAdmin ? new Set(allDepts.map(d => d.id)) : new Set((userDepts ?? []).map(d => d.id)))
     setPendingUserCount(pendingCount)
+    setCompetencyChanges(changes)
     setIsLoading(false)
   }, [activeDeptId, isAdmin, user.email])
 
@@ -171,6 +205,8 @@ export default function AppShell({
         departments,
         activeDepartment,
         hasEditAccess,
+        competencyChanges,
+        applyCompetencyChanges,
       }}
     >
       <div className="flex h-screen overflow-hidden bg-gray-50">

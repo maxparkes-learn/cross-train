@@ -9,6 +9,8 @@ import type {
   Department,
   UserProfile,
   UserRole,
+  CompetencyChange,
+  CompetencyChangeMap,
 } from './types'
 import {
   DEFAULT_SKILL_LABELS,
@@ -311,29 +313,122 @@ export async function updateEmployeeAbsence(employeeId: string, isAbsent: boolea
 
 // ---- Competencies ----
 
+/**
+ * Writes an employee's competency levels, recording any genuine changes to
+ * competency_changes.
+ *
+ * The caller passes the employee's ENTIRE station map on every debounced save --
+ * including saves triggered by a pure name, certification or group edit -- so this
+ * diffs against current state and writes only what actually changed. Without the
+ * diff, a single keystroke in the name field would rewrite every station row and
+ * log a history entry for each one.
+ *
+ * Previous levels are read from the database rather than taken from the caller,
+ * because the caller's React state is stale by construction: the save is
+ * 800ms-debounced and the matrix never rebuilds its rows from the server after an
+ * edit. Trusting it would let one user's stale tab both overwrite another user's
+ * change and log a transition that never happened.
+ *
+ * Returns the history rows it wrote, carrying the server's changed_at, so the UI
+ * can update optimistically with the persisted value rather than a guess.
+ */
 export async function upsertCompetencies(
   employeeId: string,
   competencies: Record<string, number>,
-): Promise<void> {
+  actor?: { email: string; stations: Pick<Station, 'id' | 'name' | 'department_id'>[] },
+): Promise<CompetencyChange[]> {
   const db = createClient()
   const stationIds = Object.keys(competencies)
-  if (stationIds.length === 0) return
+  if (stationIds.length === 0) return []
 
-  // Delete only for the stations being updated (preserves cross-dept competency data)
-  const { error: deleteError } = await db
+  const { data: existingRows, error: readError } = await db
     .from('competencies')
-    .delete()
+    .select('station_id, level')
     .eq('employee_id', employeeId)
     .in('station_id', stationIds)
-  if (deleteError) throw deleteError
+  if (readError) throw readError
 
-  const rows = stationIds.map(stationId => ({
-    employee_id: employeeId,
-    station_id: stationId,
-    level: competencies[stationId],
-  }))
-  const { error } = await db.from('competencies').insert(rows)
-  if (error) throw error
+  const previous = new Map<string, number>(
+    (existingRows ?? []).map((r: { station_id: string; level: number }) => [r.station_id, r.level]),
+  )
+
+  // A missing row and a level of 0 are already equivalent to every reader in the
+  // app (all of them use `?? 0`), so going from "no row" to 0 is not a change.
+  const changedIds = stationIds.filter((stationId) => {
+    const prev = previous.get(stationId)
+    const next = competencies[stationId] ?? 0
+    return prev === undefined ? next !== 0 : prev !== next
+  })
+  if (changedIds.length === 0) return []
+
+  // Upsert rather than delete-then-insert. The old approach issued two separate
+  // requests, so a closed tab or dropped connection between them permanently
+  // destroyed every competency row for the employee.
+  const { error: writeError } = await db.from('competencies').upsert(
+    changedIds.map((stationId) => ({
+      employee_id: employeeId,
+      station_id: stationId,
+      level: competencies[stationId] ?? 0,
+    })),
+    { onConflict: 'employee_id,station_id' },
+  )
+  if (writeError) throw writeError
+
+  if (!actor) return []
+
+  const stationById = new Map(actor.stations.map((s) => [s.id, s]))
+  const historyRows = changedIds.map((stationId) => {
+    const station = stationById.get(stationId)
+    return {
+      employee_id: employeeId,
+      station_id: stationId,
+      station_name: station?.name ?? stationId,
+      department_id: station?.department_id ?? null,
+      old_level: previous.get(stationId) ?? null,
+      new_level: competencies[stationId] ?? 0,
+      changed_by: actor.email || 'unknown',
+    }
+  })
+
+  // Best-effort. The competency write above has already committed, so throwing
+  // here would abandon the caller's remaining work over a missing history row.
+  // Unlike insertAuditLog, the failure is at least logged rather than discarded.
+  const { data: inserted, error: historyError } = await db
+    .from('competency_changes')
+    .insert(historyRows)
+    .select()
+  if (historyError) {
+    console.error('competency_changes insert failed', historyError)
+    return []
+  }
+  return (inserted ?? []) as CompetencyChange[]
+}
+
+/**
+ * Each employee's most recent competency change, keyed by employee_id.
+ *
+ * Reads the latest_competency_changes view, which collapses the log to one row per
+ * employee in Postgres. Fetched unfiltered: the result is bounded by the number of
+ * employees regardless of log size, and the cross-department Needs Attention page
+ * needs all of them.
+ *
+ * Never throws. This runs inside AppShell's Promise.all, where a rejection would
+ * skip setIsLoading(false) and leave the whole app on its loading screen. If the
+ * migration has not been run yet, callers get {} and the column renders dashes.
+ */
+export async function fetchLatestCompetencyChanges(): Promise<CompetencyChangeMap> {
+  const db = createClient()
+  try {
+    const { data, error } = await db.from('latest_competency_changes').select('*')
+    if (error) throw error
+
+    const map: CompetencyChangeMap = {}
+    for (const row of (data ?? []) as CompetencyChange[]) map[row.employee_id] = row
+    return map
+  } catch (err) {
+    console.error('fetchLatestCompetencyChanges failed', err)
+    return {}
+  }
 }
 
 // ---- Settings ----
