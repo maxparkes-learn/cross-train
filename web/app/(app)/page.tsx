@@ -2,6 +2,13 @@ import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import { fetchDepartments, fetchUserDepartments, fetchUserProfile } from '@/lib/db'
 
+async function signOut() {
+  'use server'
+  const supabase = await createClient()
+  await supabase.auth.signOut()
+  redirect('/auth/login')
+}
+
 export default async function RootPage() {
   const supabase = await createClient()
   const {
@@ -30,8 +37,18 @@ export default async function RootPage() {
         <p className="text-sm text-gray-500">
           {isAdmin
             ? 'Create your first department from the sidebar to get started.'
-            : 'Your account is pending department access. Please contact the admin.'}
+            : 'Your account is pending department access. Contact max.parkes@clutch.ca to be added.'}
         </p>
+        {!isAdmin && (
+          <form action={signOut} className="mt-6">
+            <button
+              type="submit"
+              className="text-xs text-gray-400 hover:text-gray-600 underline transition-colors"
+            >
+              Sign out
+            </button>
+          </form>
+        )}
       </div>
     </div>
   )

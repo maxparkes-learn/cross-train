@@ -16,7 +16,13 @@ function LoginContent() {
     if (err === 'unauthorized_domain') {
       setError('Access denied. Only @clutch.ca accounts are allowed.')
     } else if (err === 'auth_failed') {
-      setError(`Authentication failed${detail ? `: ${decodeURIComponent(detail)}` : '. Please try again.'}`)
+      const decoded = detail ? decodeURIComponent(detail).toLowerCase() : ''
+      const isPkce = decoded.includes('pkce') || decoded.includes('code_verifier') || decoded.includes('code verifier')
+      setError(
+        isPkce
+          ? 'Your sign-in link expired. Please click the button below to try again.'
+          : `Authentication failed${detail ? `: ${decodeURIComponent(detail)}` : '. Please try again.'}`
+      )
     }
   }, [searchParams])
 
@@ -46,10 +52,7 @@ function LoginContent() {
 
         {error && (
           <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 text-left">
-            <div>{error}</div>
-            <div className="mt-2 text-xs text-red-500 break-all">
-              URL: {typeof window !== 'undefined' ? window.location.href : ''}
-            </div>
+            {error}
           </div>
         )}
 

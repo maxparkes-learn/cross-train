@@ -14,6 +14,7 @@ import {
   upsertSetting,
   createDepartment,
   deleteDepartment,
+  renameDepartment,
 } from '@/lib/db'
 
 interface NavItem { href: string; label: string; icon: string }
@@ -34,6 +35,10 @@ interface SidebarProps {
   onDepartmentsChange: () => Promise<void>
   collapsed: boolean
   onToggleCollapsed: () => void
+  canTogglePreview?: boolean
+  previewAsManager?: boolean
+  onTogglePreview?: () => void
+  pendingUserCount?: number
 }
 
 export default function Sidebar({
@@ -52,6 +57,10 @@ export default function Sidebar({
   onDepartmentsChange,
   collapsed,
   onToggleCollapsed,
+  canTogglePreview = false,
+  previewAsManager = false,
+  onTogglePreview,
+  pendingUserCount = 0,
 }: SidebarProps) {
   const router = useRouter()
   const isAdmin = userRole === 'admin' || userRole === 'superadmin'
@@ -96,6 +105,11 @@ export default function Sidebar({
   // Add department form
   const [newDeptName, setNewDeptName] = useState('')
   const [addingDept, setAddingDept] = useState(false)
+
+  // Edit department name
+  const [editingDeptId, setEditingDeptId] = useState<string | null>(null)
+  const [editDeptName, setEditDeptName] = useState('')
+  const [savingDept, setSavingDept] = useState(false)
 
   // Sync local settings when dept changes
   useEffect(() => {
@@ -236,6 +250,23 @@ export default function Sidebar({
     if (dept.id === activeDeptId) router.push('/')
   }
 
+  const handleStartEditDept = (dept: Department) => {
+    setEditingDeptId(dept.id)
+    setEditDeptName(dept.name)
+  }
+
+  const handleSaveRenameDept = async () => {
+    if (!editDeptName.trim() || !editingDeptId) return
+    setSavingDept(true)
+    try {
+      await renameDepartment(editingDeptId, editDeptName.trim())
+      setEditingDeptId(null)
+      await onDepartmentsChange()
+    } finally {
+      setSavingDept(false)
+    }
+  }
+
   // ---- Collapsed view ----
 
   if (collapsed) {
@@ -254,13 +285,16 @@ export default function Sidebar({
             key={item.href}
             href={item.href}
             title={item.label}
-            className={`w-10 h-10 flex items-center justify-center rounded-lg text-lg transition-colors ${
+            className={`relative w-10 h-10 flex items-center justify-center rounded-lg text-lg transition-colors ${
               pathname.startsWith(item.href)
                 ? 'bg-white/10 text-white'
                 : 'text-gray-400 hover:bg-white/5 hover:text-white'
             }`}
           >
             {item.icon}
+            {item.label === 'Users' && pendingUserCount > 0 && (
+              <span className="absolute top-1 right-1 w-2 h-2 bg-amber-400 rounded-full" />
+            )}
           </Link>
         ))}
 
@@ -327,7 +361,12 @@ export default function Sidebar({
             }`}
           >
             <span>{item.icon}</span>
-            {item.label}
+            <span className="flex-1">{item.label}</span>
+            {item.label === 'Users' && pendingUserCount > 0 && (
+              <span className="text-xs font-bold bg-amber-400 text-gray-900 rounded-full px-1.5 py-0.5 leading-none min-w-[18px] text-center">
+                {pendingUserCount}
+              </span>
+            )}
           </Link>
         ))}
       </nav>
@@ -528,11 +567,30 @@ export default function Sidebar({
                 {departments.length > 0 && (
                   <div className="space-y-1">
                     {departments.map((d) => (
-                      <div key={d.id} className="flex items-center justify-between text-xs text-gray-400 group">
-                        <span className={`truncate ${d.id === activeDeptId ? 'text-white font-medium' : ''}`}>{d.name}</span>
-                        {departments.length > 1 && (
-                          <button onClick={() => handleDeleteDepartment(d)}
-                            className="ml-2 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-300 transition-opacity">✕</button>
+                      <div key={d.id}>
+                        {editingDeptId === d.id ? (
+                          <div className="flex items-center gap-1">
+                            <input
+                              autoFocus
+                              value={editDeptName}
+                              onChange={(e) => setEditDeptName(e.target.value)}
+                              onKeyDown={(e) => { if (e.key === 'Enter') handleSaveRenameDept(); if (e.key === 'Escape') setEditingDeptId(null) }}
+                              className="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-gray-400"
+                            />
+                            <button onClick={handleSaveRenameDept} disabled={savingDept || !editDeptName.trim()}
+                              className="text-indigo-400 hover:text-indigo-300 disabled:opacity-50 text-xs">✓</button>
+                            <button onClick={() => setEditingDeptId(null)} className="text-gray-500 hover:text-gray-300 text-xs">✕</button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-between text-xs text-gray-400 group">
+                            <span className={`truncate flex-1 ${d.id === activeDeptId ? 'text-white font-medium' : ''}`}>{d.name}</span>
+                            <div className="flex items-center gap-1 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button onClick={() => handleStartEditDept(d)} className="text-gray-400 hover:text-white">✎</button>
+                              {departments.length > 1 && (
+                                <button onClick={() => handleDeleteDepartment(d)} className="text-red-400 hover:text-red-300">✕</button>
+                              )}
+                            </div>
+                          </div>
                         )}
                       </div>
                     ))}
@@ -556,14 +614,26 @@ export default function Sidebar({
       </div>
 
       {/* User footer */}
-      <div className="px-4 py-3 border-t border-gray-800">
+      <div className="px-4 py-3 border-t border-gray-800 space-y-2">
+        {canTogglePreview && (
+          <button
+            onClick={onTogglePreview}
+            className={`w-full text-left text-xs px-2.5 py-1.5 rounded-lg border transition-colors ${
+              previewAsManager
+                ? 'bg-amber-500/20 border-amber-500/40 text-amber-300 hover:bg-amber-500/30'
+                : 'border-gray-700 text-gray-500 hover:text-gray-300 hover:border-gray-600'
+            }`}
+          >
+            {previewAsManager ? '✕ Exit Manager Preview' : '👁 Preview as Manager'}
+          </button>
+        )}
         <div className="flex items-center justify-between">
           <div className="min-w-0">
             <span className="text-xs text-gray-400 truncate block">{user.email}</span>
             <span className={`text-xs ${
               isSuperAdmin ? 'text-amber-400' : userRole === 'admin' ? 'text-indigo-400' : 'text-gray-600'
             }`}>
-              {userRole === 'superadmin' ? 'Superadmin' : userRole === 'admin' ? 'Admin' : 'Manager'}
+              {previewAsManager ? 'Manager (preview)' : userRole === 'superadmin' ? 'Superadmin' : userRole === 'admin' ? 'Admin' : 'Manager'}
             </span>
           </div>
           <button onClick={onSignOut}

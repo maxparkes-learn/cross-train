@@ -39,6 +39,12 @@ export async function deleteDepartment(id: string): Promise<void> {
   if (error) throw error
 }
 
+export async function renameDepartment(id: string, name: string): Promise<void> {
+  const db = createClient()
+  const { error } = await db.from('departments').update({ name: name.trim() }).eq('id', id)
+  if (error) throw error
+}
+
 // ---- User Profiles ----
 
 export async function upsertUserProfile(email: string, displayName: string): Promise<void> {
@@ -159,7 +165,7 @@ export async function deleteStation(stationId: string): Promise<void> {
 
 export async function fetchEmployees(deptId: string): Promise<Employee[]> {
   const db = createClient()
-  const { data: empRows, error: empError } = await db.from('employees').select('*').eq('department_id', deptId).eq('is_archived', false).order('sort_order').order('name')
+  const { data: empRows, error: empError } = await db.from('employees').select('*').or(`department_id.eq.${deptId},secondary_department_ids.cs.{${deptId}}`).eq('is_archived', false).order('sort_order').order('name')
   if (empError) throw empError
 
   const { data: compRows, error: compError } = await db.from('competencies').select('*').in('employee_id', empRows.map((e) => e.id))
@@ -177,10 +183,13 @@ export async function fetchEmployees(deptId: string): Promise<Employee[]> {
   }))
 }
 
-export async function upsertEmployee(employee: Partial<Employee> & { id: string }, deptId: string): Promise<void> {
+export async function upsertEmployee(employee: Partial<Employee> & { id: string }, deptId?: string): Promise<void> {
   const db = createClient()
-  const { station_competencies: _, ...row } = employee as Employee
-  const { error } = await db.from('employees').upsert({ ...row, is_archived: row.is_archived ?? false, department_id: deptId })
+  const { station_competencies: _, secondary_department_ids: __, ...row } = employee as Employee
+  const data = deptId
+    ? { ...row, is_archived: row.is_archived ?? false, department_id: deptId }
+    : { ...row, is_archived: row.is_archived ?? false }
+  const { error } = await db.from('employees').upsert(data)
   if (error) throw error
 }
 
@@ -189,6 +198,31 @@ export async function fetchAllEmployees(): Promise<Employee[]> {
   const { data: empRows, error: empError } = await db.from('employees').select('*').eq('is_archived', false).order('name')
   if (empError) throw empError
   return empRows.map((e) => ({ ...e, station_competencies: {} }))
+}
+
+export async function fetchAllEmployeesWithCompetencies(): Promise<Employee[]> {
+  const db = createClient()
+  const { data: empRows, error: empError } = await db.from('employees').select('*').eq('is_archived', false).order('name')
+  if (empError) throw empError
+
+  const { data: compRows, error: compError } = await db
+    .from('competencies').select('*')
+    .in('employee_id', empRows.map((e) => e.id))
+  if (compError) throw compError
+
+  const compByEmployee: Record<string, Record<string, number>> = {}
+  for (const c of compRows) {
+    if (!compByEmployee[c.employee_id]) compByEmployee[c.employee_id] = {}
+    compByEmployee[c.employee_id][c.station_id] = c.level
+  }
+  return empRows.map((e) => ({ ...e, station_competencies: compByEmployee[e.id] ?? {} }))
+}
+
+export async function fetchAllStations(): Promise<Station[]> {
+  const db = createClient()
+  const { data, error } = await db.from('stations').select('*').order('name')
+  if (error) throw error
+  return data
 }
 
 export async function fetchArchivedEmployees(): Promise<Employee[]> {
@@ -230,6 +264,42 @@ export async function deleteEmployee(employeeId: string): Promise<void> {
   if (error) throw error
 }
 
+export async function addEmployeeToSecondaryDepartment(employeeId: string, deptId: string): Promise<void> {
+  const db = createClient()
+  const { data: emp } = await db.from('employees').select('secondary_department_ids').eq('id', employeeId).single()
+  const current: string[] = emp?.secondary_department_ids ?? []
+  if (current.includes(deptId)) return
+  const { error } = await db.from('employees').update({ secondary_department_ids: [...current, deptId] }).eq('id', employeeId)
+  if (error) throw error
+}
+
+export async function removeEmployeeFromSecondaryDepartment(employeeId: string, deptId: string): Promise<void> {
+  const db = createClient()
+  const { data: emp } = await db.from('employees').select('secondary_department_ids').eq('id', employeeId).single()
+  const current: string[] = emp?.secondary_department_ids ?? []
+  const { error } = await db.from('employees').update({ secondary_department_ids: current.filter(id => id !== deptId) }).eq('id', employeeId)
+  if (error) throw error
+}
+
+export async function fetchAllEmployeesBasic(): Promise<Pick<Employee, 'id' | 'name' | 'department_id' | 'secondary_department_ids'>[]> {
+  const db = createClient()
+  const { data, error } = await db.from('employees').select('id, name, department_id, secondary_department_ids').eq('is_archived', false).order('name')
+  if (error) throw error
+  return data ?? []
+}
+
+export async function updateEmployeeName(employeeId: string, name: string): Promise<void> {
+  const db = createClient()
+  const { error } = await db.from('employees').update({ name }).eq('id', employeeId)
+  if (error) throw error
+}
+
+export async function updateEmployeeHireDate(employeeId: string, hireDate: string): Promise<void> {
+  const db = createClient()
+  const { error } = await db.from('employees').update({ hire_date: hireDate }).eq('id', employeeId)
+  if (error) throw error
+}
+
 export async function updateEmployeeAbsence(employeeId: string, isAbsent: boolean): Promise<void> {
   const db = createClient()
   const { error } = await db
@@ -246,22 +316,24 @@ export async function upsertCompetencies(
   competencies: Record<string, number>,
 ): Promise<void> {
   const db = createClient()
+  const stationIds = Object.keys(competencies)
+  if (stationIds.length === 0) return
+
+  // Delete only for the stations being updated (preserves cross-dept competency data)
   const { error: deleteError } = await db
     .from('competencies')
     .delete()
     .eq('employee_id', employeeId)
+    .in('station_id', stationIds)
   if (deleteError) throw deleteError
 
-  const rows = Object.entries(competencies).map(([stationId, level]) => ({
+  const rows = stationIds.map(stationId => ({
     employee_id: employeeId,
     station_id: stationId,
-    level,
+    level: competencies[stationId],
   }))
-
-  if (rows.length > 0) {
-    const { error } = await db.from('competencies').insert(rows)
-    if (error) throw error
-  }
+  const { error } = await db.from('competencies').insert(rows)
+  if (error) throw error
 }
 
 // ---- Settings ----
@@ -361,6 +433,62 @@ export async function fetchAuditLogs(limit = 50): Promise<AuditLog[]> {
     .limit(limit)
   if (error) throw error
   return data
+}
+
+// ---- Bulk create employees ----
+
+export async function bulkCreateEmployees(
+  rows: Array<{ name: string; departmentId: string; hireDate: string | null }>
+): Promise<number> {
+  const db = createClient()
+  let created = 0
+  for (const { name, departmentId, hireDate } of rows) {
+    if (!name.trim() || !departmentId) continue
+    const id = generateId('emp')
+    const record: Record<string, unknown> = {
+      id,
+      name: name.trim(),
+      department_id: departmentId,
+      certification_level: 0,
+      is_absent: false,
+      is_archived: false,
+      is_lead: false,
+      group_ids: [],
+      sort_order: 9999,
+    }
+    if (hireDate) record.hire_date = hireDate
+    const { error } = await db.from('employees').insert(record)
+    if (!error) created++
+  }
+  return created
+}
+
+// ---- Bulk invite ----
+
+export async function bulkInviteManagers(rows: { email: string; deptId: string }[]): Promise<number> {
+  const db = createClient()
+  let imported = 0
+  for (const { email: rawEmail, deptId } of rows) {
+    const email = rawEmail.trim().toLowerCase()
+    if (!email || !email.includes('@') || !deptId) continue
+    // Insert profile only if new — preserves existing role
+    await db.from('user_profiles').insert({ email, display_name: email.split('@')[0], role: 'manager' })
+    // Assign to dept (no-op if already assigned)
+    await db.from('department_users').upsert({ department_id: deptId, user_email: email }, { ignoreDuplicates: true })
+    imported++
+  }
+  return imported
+}
+
+// ---- Pending users ----
+
+export async function fetchPendingUserCount(): Promise<number> {
+  const db = createClient()
+  const { data: profiles } = await db.from('user_profiles').select('email').eq('role', 'manager')
+  if (!profiles || profiles.length === 0) return 0
+  const { data: assigned } = await db.from('department_users').select('user_email')
+  const assignedEmails = new Set((assigned ?? []).map((r: { user_email: string }) => r.user_email))
+  return profiles.filter((p: { email: string }) => !assignedEmails.has(p.email)).length
 }
 
 // ---- Helpers ----

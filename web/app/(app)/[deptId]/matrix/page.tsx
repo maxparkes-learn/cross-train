@@ -14,19 +14,37 @@ import {
   insertAuditLog,
   fetchSetting,
   upsertSetting,
+  addEmployeeToSecondaryDepartment,
+  removeEmployeeFromSecondaryDepartment,
+  fetchAllEmployeesBasic,
 } from '@/lib/db'
 import type { Employee, EmployeeGroup } from '@/lib/types'
 
 interface Row {
   id: string | null
   isNew: boolean
+  isHomeDept: boolean
+  homeDeptId: string
   name: string
   certLevel: number
   isPresent: boolean
   isLead: boolean
+  hireDate: string | null
   competencies: Record<string, number>
   groupIds: string[]
   dirty: boolean
+}
+
+function formatTenure(hireDate: string): string {
+  const hired = new Date(hireDate)
+  const now = new Date()
+  const months = (now.getFullYear() - hired.getFullYear()) * 12 + (now.getMonth() - hired.getMonth())
+  if (months < 1) return '< 1 month'
+  if (months < 12) return `${months} month${months !== 1 ? 's' : ''}`
+  const years = Math.floor(months / 12)
+  const rem = months % 12
+  if (rem === 0) return `${years} year${years !== 1 ? 's' : ''}`
+  return `${years} year${years !== 1 ? 's' : ''}, ${rem} month${rem !== 1 ? 's' : ''}`
 }
 
 type DisplayMode = 'text' | 'circle'
@@ -253,9 +271,10 @@ interface GroupCellProps {
   groups: EmployeeGroup[]
   onToggleGroup: (rowIndex: number, groupId: string) => void
   onSaveGroups: (groups: EmployeeGroup[]) => Promise<void>
+  readOnly?: boolean
 }
 
-function GroupCell({ row, rowIndex, groups, onToggleGroup, onSaveGroups }: GroupCellProps) {
+function GroupCell({ row, rowIndex, groups, onToggleGroup, onSaveGroups, readOnly = false }: GroupCellProps) {
   const [open, setOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
@@ -328,7 +347,7 @@ function GroupCell({ row, rowIndex, groups, onToggleGroup, onSaveGroups }: Group
 
   return (
     <div ref={cellRef} className="px-2 py-1.5 min-w-[140px]">
-      <div onClick={openPopover} className="flex flex-wrap gap-1 min-h-[26px] cursor-pointer rounded p-0.5 hover:bg-gray-50 transition-colors">
+      <div onClick={readOnly ? undefined : openPopover} className={`flex flex-wrap gap-1 min-h-[26px] rounded p-0.5 transition-colors ${readOnly ? '' : 'cursor-pointer hover:bg-gray-50'}`}>
         {assignedGroups.length === 0
           ? <span className="text-gray-300 text-xs self-center pl-0.5">—</span>
           : assignedGroups.map(g => (
@@ -398,14 +417,17 @@ function GroupCell({ row, rowIndex, groups, onToggleGroup, onSaveGroups }: Group
 
 // ---- Helpers ----
 
-function buildRows(employees: Employee[], stationIds: string[]): Row[] {
+function buildRows(employees: Employee[], stationIds: string[], currentDeptId: string): Row[] {
   return employees.map((e) => ({
     id: e.id,
     isNew: false,
+    isHomeDept: e.department_id === currentDeptId,
+    homeDeptId: e.department_id,
     name: e.name,
     certLevel: e.certification_level,
     isPresent: !e.is_absent,
     isLead: e.is_lead ?? false,
+    hireDate: e.hire_date ?? null,
     competencies: Object.fromEntries(stationIds.map((sid) => [sid, e.station_competencies[sid] ?? 0])),
     groupIds: e.group_ids ?? [],
     dirty: false,
@@ -413,9 +435,9 @@ function buildRows(employees: Employee[], stationIds: string[]): Row[] {
 }
 
 export default function MatrixPage() {
-  const { stations, employees, settings, refreshEmployees, user, activeDepartment } = useApp()
+  const { stations, employees, settings, refreshEmployees, user, activeDepartment, hasEditAccess, userRole, departments } = useApp()
   const [rows, setRows] = useState<Row[]>(() =>
-    buildRows(employees, stations.map((s) => s.id)),
+    buildRows(employees, stations.map((s) => s.id), activeDepartment?.id ?? ''),
   )
   const [saving, setSaving] = useState<Record<string, boolean>>({})
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
@@ -436,6 +458,13 @@ export default function MatrixPage() {
   const [groupFilter, setGroupFilter] = useState<Set<string>>(new Set())
   const [stationFilters, setStationFilters] = useState<Record<string, Set<string>>>({})
   const [filterName, setFilterName] = useState('')
+  const [matrixSort, setMatrixSort] = useState<{ col: string | null; dir: 'asc' | 'desc' }>({ col: null, dir: 'asc' })
+
+  type BasicEmployee = Pick<Employee, 'id' | 'name' | 'department_id' | 'secondary_department_ids'>
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [pickerEmployees, setPickerEmployees] = useState<BasicEmployee[]>([])
+  const [pickerSearch, setPickerSearch] = useState('')
+  const [addingFromDept, setAddingFromDept] = useState(false)
 
   const hasFilters = filterName !== '' || presenceFilter.size > 0 || employeeFilter.size > 0 ||
     certFilter.size > 0 || groupFilter.size > 0 || Object.values(stationFilters).some(s => s.size > 0)
@@ -444,6 +473,16 @@ export default function MatrixPage() {
     setFilterName(''); setPresenceFilter(new Set()); setEmployeeFilter(new Set())
     setCertFilter(new Set()); setGroupFilter(new Set()); setStationFilters({})
   }
+
+  const toggleMatrixSort = (col: string) => {
+    setMatrixSort(prev => prev.col === col ? { col, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { col, dir: 'asc' })
+  }
+
+  const sortInd = (col: string) => (
+    <span className={`ml-0.5 text-[10px] ${matrixSort.col === col ? 'text-indigo-500' : 'text-gray-300'}`}>
+      {matrixSort.col === col ? (matrixSort.dir === 'asc' ? '▲' : '▼') : '↕'}
+    </span>
+  )
 
   // Load groups and hidden columns for the active department
   useEffect(() => {
@@ -516,7 +555,7 @@ export default function MatrixPage() {
   if (prevEmpLen.current !== employees.length || prevStnLen.current !== stations.length) {
     prevEmpLen.current = employees.length
     prevStnLen.current = stations.length
-    setRows(buildRows(employees, stations.map((s) => s.id)))
+    setRows(buildRows(employees, stations.map((s) => s.id), activeDepartment?.id ?? ''))
   }
 
   const { skillLabels, certLabels, competencyColors } = settings
@@ -540,6 +579,27 @@ export default function MatrixPage() {
       }
       return true
     })
+    .sort((a, b) => {
+      const col = matrixSort.col
+      if (!col) return 0
+      const toMonths = (d: string | null) => {
+        if (!d) return -1
+        const h = new Date(d), n = new Date()
+        return (n.getFullYear() - h.getFullYear()) * 12 + n.getMonth() - h.getMonth()
+      }
+      let cmp = 0
+      if (col === 'name') cmp = a.name.localeCompare(b.name)
+      else if (col === 'present') cmp = (a.isPresent ? 0 : 1) - (b.isPresent ? 0 : 1)
+      else if (col === 'certification') cmp = a.certLevel - b.certLevel
+      else if (col === 'group') {
+        const gA = a.groupIds[0] ? (groups.find(g => g.id === a.groupIds[0])?.name ?? '') : ''
+        const gB = b.groupIds[0] ? (groups.find(g => g.id === b.groupIds[0])?.name ?? '') : ''
+        cmp = gA.localeCompare(gB)
+      }
+      else if (col === 'tenure') cmp = toMonths(a.hireDate) - toMonths(b.hireDate)
+      else cmp = (a.competencies[col] ?? 0) - (b.competencies[col] ?? 0)
+      return matrixSort.dir === 'asc' ? cmp : -cmp
+    })
 
   const scheduleSave = useCallback(
     (rowId: string, updatedRow: Row) => {
@@ -556,7 +616,7 @@ export default function MatrixPage() {
             is_absent: !updatedRow.isPresent,
             is_lead: updatedRow.isLead,
             group_ids: updatedRow.groupIds,
-          }, activeDepartment!.id)
+          }, updatedRow.isHomeDept ? activeDepartment!.id : undefined)
           await upsertCompetencies(empId, updatedRow.competencies)
           if (!updatedRow.id) {
             setRows((prev) => prev.map((r) => r === updatedRow ? { ...r, id: empId, isNew: false, dirty: false } : r))
@@ -595,7 +655,8 @@ export default function MatrixPage() {
 
   const addRow = () => {
     setRows((prev) => [...prev, {
-      id: null, isNew: true, name: '', certLevel: 0, isPresent: true, isLead: false,
+      id: null, isNew: true, isHomeDept: true, homeDeptId: activeDepartment?.id ?? '',
+      name: '', certLevel: 0, isPresent: true, isLead: false, hireDate: null,
       competencies: Object.fromEntries(localStations.map((s) => [s.id, 0])),
       groupIds: [], dirty: false,
     }])
@@ -623,12 +684,41 @@ export default function MatrixPage() {
   const handleDeleteRow = async (index: number) => {
     const row = rows[index]
     if (row.id) {
-      if (!confirm(`Archive ${row.name}? They will be removed from the active matrix but their historical rotation and cross-training data will be preserved.`)) return
-      await deleteEmployee(row.id)
-      await insertAuditLog(user.email ?? '', 'Archived employee', row.name)
+      if (row.isHomeDept) {
+        if (!confirm(`Archive ${row.name}? They will be removed from the active matrix but their historical rotation and cross-training data will be preserved.`)) return
+        await deleteEmployee(row.id)
+        await insertAuditLog(user.email ?? '', 'Archived employee', row.name)
+      } else {
+        if (!confirm(`Remove ${row.name} from this department? Their home department data and history are unaffected.`)) return
+        await removeEmployeeFromSecondaryDepartment(row.id, activeDepartment!.id)
+      }
       await refreshEmployees()
     }
     setRows((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  const openPicker = async () => {
+    const currentDeptId = activeDepartment?.id ?? ''
+    const all = await fetchAllEmployeesBasic()
+    setPickerEmployees(all.filter(e =>
+      e.department_id !== currentDeptId &&
+      !(e.secondary_department_ids?.includes(currentDeptId))
+    ))
+    setPickerSearch('')
+    setPickerOpen(true)
+  }
+
+  const handleAddFromDept = async (emp: BasicEmployee) => {
+    if (!activeDepartment || addingFromDept) return
+    setAddingFromDept(true)
+    try {
+      await addEmployeeToSecondaryDepartment(emp.id, activeDepartment.id)
+      await refreshEmployees()
+      setPickerOpen(false)
+      setPickerSearch('')
+    } finally {
+      setAddingFromDept(false)
+    }
   }
 
   if (localStations.length === 0) {
@@ -645,7 +735,16 @@ export default function MatrixPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <h1 className="text-2xl font-bold text-gray-900">Cross-Training Matrix</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-2xl font-bold text-gray-900">Cross-Training Matrix</h1>
+          {userRole === 'manager' && (
+            <span className={`text-xs font-medium px-2.5 py-0.5 rounded-full ${
+              hasEditAccess ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-100 text-gray-500'
+            }`}>
+              {hasEditAccess ? 'Edit' : 'View only'}
+            </span>
+          )}
+        </div>
         {total > 0 && (
           <p className="text-sm text-gray-500">
             <span className="font-medium text-gray-700">{totalPresent}</span> present ·{' '}
@@ -734,7 +833,9 @@ export default function MatrixPage() {
                 {!hiddenColumns.has('present') && (
                   <th className="px-3 py-2.5 text-left font-medium text-gray-600 whitespace-nowrap w-16">
                     <span className="inline-flex items-center gap-0.5">
-                      Present
+                      <button onClick={() => toggleMatrixSort('present')} className="hover:text-gray-900 transition-colors">
+                        Present{sortInd('present')}
+                      </button>
                       <FilterButton
                         options={[
                           { value: 'present', label: 'Present' },
@@ -751,7 +852,9 @@ export default function MatrixPage() {
                 {/* Employee */}
                 <th className="px-3 py-2.5 text-left font-medium text-gray-600 min-w-[140px]">
                   <span className="inline-flex items-center gap-0.5">
-                    Employee
+                    <button onClick={() => toggleMatrixSort('name')} className="hover:text-gray-900 transition-colors">
+                      Employee{sortInd('name')}
+                    </button>
                     <FilterButton
                       options={rows.filter(r => r.id).map(r => ({ value: r.id!, label: r.name || '(unnamed)' }))}
                       selected={employeeFilter}
@@ -760,11 +863,20 @@ export default function MatrixPage() {
                   </span>
                 </th>
 
+                {/* Tenure */}
+                <th className="px-3 py-2.5 text-left font-medium text-gray-600 whitespace-nowrap">
+                  <button onClick={() => toggleMatrixSort('tenure')} className="hover:text-gray-900 transition-colors">
+                    Tenure{sortInd('tenure')}
+                  </button>
+                </th>
+
                 {/* Certification */}
                 {!hiddenColumns.has('certification') && (
                   <th className="px-3 py-2.5 text-left font-medium text-gray-600 whitespace-nowrap min-w-[130px]">
                     <span className="inline-flex items-center gap-0.5">
-                      Certification
+                      <button onClick={() => toggleMatrixSort('certification')} className="hover:text-gray-900 transition-colors">
+                        Certification{sortInd('certification')}
+                      </button>
                       <FilterButton
                         options={certLevels.map(l => ({ value: String(l), label: `${certLabels[l]}` }))}
                         selected={certFilter}
@@ -779,7 +891,9 @@ export default function MatrixPage() {
                 {!hiddenColumns.has('group') && (
                   <th className="px-3 py-2.5 text-left font-medium text-gray-600 min-w-[140px]">
                     <span className="inline-flex items-center gap-0.5">
-                      Group
+                      <button onClick={() => toggleMatrixSort('group')} className="hover:text-gray-900 transition-colors">
+                        Group{sortInd('group')}
+                      </button>
                       <FilterButton
                         options={groups.map(g => ({ value: g.id, label: g.name, color: g.color }))}
                         selected={groupFilter}
@@ -792,19 +906,22 @@ export default function MatrixPage() {
 
                 {/* Stations */}
                 {localStations.map((s, i) => hiddenColumns.has(s.id) ? null : (
-                  <th key={s.id} draggable
-                    onDragStart={() => handleStnDragStart(i)}
-                    onDragOver={(e) => handleStnDragOver(e, i)}
-                    onDrop={() => handleStnDrop(i)}
-                    onDragEnd={() => { isDraggingStn.current = false; setDragStnIdx(null); setDragOverStnIdx(null) }}
-                    className={`px-3 py-2.5 text-center font-medium text-gray-600 whitespace-nowrap min-w-[110px] cursor-grab active:cursor-grabbing select-none ${
-                      dragOverStnIdx === i && dragStnIdx !== i ? 'border-l-2 border-l-indigo-400' : ''
+                  <th key={s.id} draggable={hasEditAccess}
+                    onDragStart={hasEditAccess ? () => handleStnDragStart(i) : undefined}
+                    onDragOver={hasEditAccess ? (e) => handleStnDragOver(e, i) : undefined}
+                    onDrop={hasEditAccess ? () => handleStnDrop(i) : undefined}
+                    onDragEnd={hasEditAccess ? () => { isDraggingStn.current = false; setDragStnIdx(null); setDragOverStnIdx(null) } : undefined}
+                    className={`px-3 py-2.5 text-center font-medium text-gray-600 whitespace-nowrap min-w-[110px] select-none ${
+                      hasEditAccess ? 'cursor-grab active:cursor-grabbing' : ''
+                    } ${dragOverStnIdx === i && dragStnIdx !== i ? 'border-l-2 border-l-indigo-400' : ''
                     }`}
                   >
                     <div className="flex flex-col items-center gap-0.5">
                       <span className="text-gray-300 text-xs">⠿</span>
                       <span className="inline-flex items-center gap-0.5">
-                        {s.name}
+                        <button onClick={(e) => { e.stopPropagation(); toggleMatrixSort(s.id) }} className="hover:text-gray-900 transition-colors cursor-pointer">
+                          {s.name}{sortInd(s.id)}
+                        </button>
                         <FilterButton
                           options={skillLevels.map(l => ({ value: String(l), label: `${skillLabels[l]}` }))}
                           selected={stationFilters[s.id] ?? new Set()}
@@ -827,62 +944,98 @@ export default function MatrixPage() {
                 const i = row.originalIndex
                 return (
                   <tr key={row.id ?? `new_${i}`}
-                    draggable={!!row.id && !hasFilters}
-                    onDragStart={() => handleRowDragStart(i)}
-                    onDragOver={(e) => handleRowDragOver(e, i)}
-                    onDrop={() => handleRowDrop(i)}
-                    onDragEnd={() => { setDragRowIdx(null); setDragOverRowIdx(null) }}
+                    draggable={hasEditAccess && !!row.id && !hasFilters && !matrixSort.col}
+                    onDragStart={hasEditAccess ? () => handleRowDragStart(i) : undefined}
+                    onDragOver={hasEditAccess ? (e) => handleRowDragOver(e, i) : undefined}
+                    onDrop={hasEditAccess ? () => handleRowDrop(i) : undefined}
+                    onDragEnd={hasEditAccess ? () => { setDragRowIdx(null); setDragOverRowIdx(null) } : undefined}
                     className={`border-b border-gray-100 transition-colors ${
                       row.isLead ? 'bg-amber-50/40' : (!row.isPresent && row.id ? 'bg-gray-50 opacity-60' : 'hover:bg-gray-50/50')
                     } ${dragOverRowIdx === i && dragRowIdx !== i ? 'border-t-2 border-t-indigo-400' : ''}`}
                   >
                     <td className="pl-2 pr-0 py-2 w-6">
-                      {row.id && !hasFilters && (
+                      {hasEditAccess && row.id && !hasFilters && !matrixSort.col && (
                         <span className="text-gray-300 cursor-grab active:cursor-grabbing text-sm select-none">⠿</span>
                       )}
                     </td>
 
                     {!hiddenColumns.has('present') && (
                       <td className="px-3 py-2 text-center">
-                        <input type="checkbox" checked={row.isPresent} onChange={() => handleAbsenceToggle(i)}
-                          className="w-4 h-4 accent-indigo-600 cursor-pointer" />
+                        <input type="checkbox" checked={row.isPresent}
+                          onChange={hasEditAccess ? () => handleAbsenceToggle(i) : undefined}
+                          disabled={!hasEditAccess}
+                          className={`w-4 h-4 accent-indigo-600 ${hasEditAccess ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`} />
                       </td>
                     )}
 
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-1.5">
-                        <button
-                          onClick={() => updateRow(i, { isLead: !row.isLead })}
-                          title={row.isLead ? 'Remove lead status' : 'Mark as team lead'}
-                          className="flex-shrink-0 text-base leading-none transition-opacity hover:opacity-60"
-                          style={{ opacity: row.isLead ? 1 : 0.15 }}
-                        >
-                          👑
-                        </button>
-                        <input type="text" value={row.name} onChange={(e) => updateRow(i, { name: e.target.value })}
-                          placeholder="Employee name"
-                          className="flex-1 text-sm bg-transparent outline-none placeholder-gray-300 focus:placeholder-gray-400 min-w-0" />
-                        {saving[row.id ?? `new_${i}`] && (
-                          <span className="w-3 h-3 border-2 border-gray-200 border-t-indigo-400 rounded-full animate-spin flex-shrink-0" />
+                        {hasEditAccess ? (
+                          <>
+                            <button
+                              onClick={() => updateRow(i, { isLead: !row.isLead })}
+                              title={row.isLead ? 'Remove lead status' : 'Mark as team lead'}
+                              className="flex-shrink-0 text-base leading-none transition-opacity hover:opacity-60"
+                              style={{ opacity: row.isLead ? 1 : 0.15 }}
+                            >
+                              👑
+                            </button>
+                            <input type="text" value={row.name} onChange={(e) => updateRow(i, { name: e.target.value })}
+                              placeholder="Employee name"
+                              className="flex-1 text-sm bg-transparent outline-none placeholder-gray-300 focus:placeholder-gray-400 min-w-0" />
+                            {saving[row.id ?? `new_${i}`] && (
+                              <span className="w-3 h-3 border-2 border-gray-200 border-t-indigo-400 rounded-full animate-spin flex-shrink-0" />
+                            )}
+                            {!row.isHomeDept && (() => {
+                              const homeDeptName = departments.find(d => d.id === row.homeDeptId)?.name
+                              return homeDeptName ? (
+                                <span className="text-xs px-1.5 py-0.5 rounded bg-blue-50 text-blue-500 border border-blue-100 whitespace-nowrap flex-shrink-0">
+                                  {homeDeptName}
+                                </span>
+                              ) : null
+                            })()}
+                          </>
+                        ) : (
+                          <>
+                            {row.isLead && <span className="flex-shrink-0 text-base leading-none">👑</span>}
+                            <span className="text-sm text-gray-900">{row.name}</span>
+                            {!row.isHomeDept && (() => {
+                              const homeDeptName = departments.find(d => d.id === row.homeDeptId)?.name
+                              return homeDeptName ? (
+                                <span className="text-xs px-1.5 py-0.5 rounded bg-blue-50 text-blue-500 border border-blue-100 whitespace-nowrap flex-shrink-0">
+                                  {homeDeptName}
+                                </span>
+                              ) : null
+                            })()}
+                          </>
                         )}
                       </div>
                     </td>
 
+                    <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-400">
+                      {row.hireDate ? formatTenure(row.hireDate) : <span className="text-gray-200">—</span>}
+                    </td>
+
                     {!hiddenColumns.has('certification') && (
                       <td className="px-3 py-2">
-                        <select value={row.certLevel} onChange={(e) => updateRow(i, { certLevel: Number(e.target.value) })}
-                          className="w-full text-sm bg-transparent outline-none cursor-pointer">
-                          {certLevels.map((l) => (
-                            <option key={l} value={l}>{certLabels[l]}</option>
-                          ))}
-                        </select>
+                        {hasEditAccess ? (
+                          <select value={row.certLevel} onChange={(e) => updateRow(i, { certLevel: Number(e.target.value) })}
+                            className="w-full text-sm bg-transparent outline-none cursor-pointer">
+                            {certLevels.map((l) => (
+                              <option key={l} value={l}>{certLabels[l]}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span className="text-sm text-gray-600">{certLabels[row.certLevel]}</span>
+                        )}
                       </td>
                     )}
 
                     {!hiddenColumns.has('group') && (
                       <td className="py-0 px-0">
                         <GroupCell row={row} rowIndex={i} groups={groups}
-                          onToggleGroup={handleToggleGroup} onSaveGroups={saveGroups} />
+                          onToggleGroup={handleToggleGroup} onSaveGroups={saveGroups}
+                          readOnly={!hasEditAccess} />
                       </td>
                     )}
 
@@ -893,54 +1046,120 @@ export default function MatrixPage() {
                       return (
                         <td key={s.id} className="px-2 py-1.5 text-center"
                           style={displayMode === 'text' ? { backgroundColor: competencyColors[level], color: contrastColor(competencyColors[level]) } : undefined}>
-                          {displayMode === 'circle' ? (
-                            <div className="relative flex items-center justify-center">
-                              <CompetencyCircle level={level} maxLevel={maxLevel} color={circleColor(competencyColors[level])} />
+                          {hasEditAccess ? (
+                            displayMode === 'circle' ? (
+                              <div className="relative flex items-center justify-center">
+                                <CompetencyCircle level={level} maxLevel={maxLevel} color={circleColor(competencyColors[level])} />
+                                <select value={level}
+                                  onChange={(e) => updateRow(i, { competencies: { ...row.competencies, [s.id]: Number(e.target.value) } })}
+                                  className="absolute inset-0 opacity-0 cursor-pointer w-full h-full">
+                                  {skillLevels.map((l) => <option key={l} value={l}>{l} — {skillLabels[l]}</option>)}
+                                </select>
+                              </div>
+                            ) : (
                               <select value={level}
                                 onChange={(e) => updateRow(i, { competencies: { ...row.competencies, [s.id]: Number(e.target.value) } })}
-                                className="absolute inset-0 opacity-0 cursor-pointer w-full h-full">
+                                className="w-full text-xs bg-transparent outline-none cursor-pointer text-center"
+                                style={{ backgroundColor: 'transparent', color: 'inherit' }}>
                                 {skillLevels.map((l) => <option key={l} value={l}>{l} — {skillLabels[l]}</option>)}
                               </select>
-                            </div>
+                            )
                           ) : (
-                            <select value={level}
-                              onChange={(e) => updateRow(i, { competencies: { ...row.competencies, [s.id]: Number(e.target.value) } })}
-                              className="w-full text-xs bg-transparent outline-none cursor-pointer text-center"
-                              style={{ backgroundColor: 'transparent', color: 'inherit' }}>
-                              {skillLevels.map((l) => <option key={l} value={l}>{l} — {skillLabels[l]}</option>)}
-                            </select>
+                            displayMode === 'circle' ? (
+                              <div className="flex items-center justify-center">
+                                <CompetencyCircle level={level} maxLevel={maxLevel} color={circleColor(competencyColors[level])} />
+                              </div>
+                            ) : (
+                              <span className="text-xs" style={{ color: 'inherit' }}>{level} — {skillLabels[level]}</span>
+                            )
                           )}
                         </td>
                       )
                     })}
 
                     <td className="px-2 py-2">
-                      <button onClick={() => handleDeleteRow(i)}
-                        className="text-gray-300 hover:text-red-400 transition-colors text-base leading-none" title="Remove employee">
-                        ✕
-                      </button>
+                      {hasEditAccess && (
+                        <button onClick={() => handleDeleteRow(i)}
+                          className="text-gray-300 hover:text-red-400 transition-colors text-base leading-none" title="Remove employee">
+                          ✕
+                        </button>
+                      )}
                     </td>
                   </tr>
                 )
               })}
 
-              <tr>
-                <td colSpan={
-                  3 // drag handle + employee + delete
-                  + (hiddenColumns.has('present') ? 0 : 1)
-                  + (hiddenColumns.has('certification') ? 0 : 1)
-                  + (hiddenColumns.has('group') ? 0 : 1)
-                  + localStations.filter(s => !hiddenColumns.has(s.id)).length
-                } className="px-3 py-2">
-                  <button onClick={addRow} className="text-sm text-indigo-600 hover:text-indigo-700 font-medium transition-colors">
-                    + Add Employee
-                  </button>
-                </td>
-              </tr>
+              {hasEditAccess && (
+                <tr>
+                  <td colSpan={
+                    4 // drag handle + employee + tenure + delete
+                    + (hiddenColumns.has('present') ? 0 : 1)
+                    + (hiddenColumns.has('certification') ? 0 : 1)
+                    + (hiddenColumns.has('group') ? 0 : 1)
+                    + localStations.filter(s => !hiddenColumns.has(s.id)).length
+                  } className="px-3 py-2">
+                    <button onClick={addRow} className="text-sm text-indigo-600 hover:text-indigo-700 font-medium transition-colors">
+                      + Add Employee
+                    </button>
+                    <button onClick={openPicker} className="text-sm text-gray-400 hover:text-indigo-600 font-medium transition-colors ml-3">
+                      + Add from another dept
+                    </button>
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
       </div>
+
+      {pickerOpen && createPortal(
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setPickerOpen(false)} />
+          <div className="relative bg-white rounded-xl shadow-xl w-full max-w-md mx-4 flex flex-col overflow-hidden max-h-[70vh]">
+            <div className="px-4 pt-4 pb-3 border-b border-gray-100">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-base font-semibold text-gray-900">Add Employee from Another Dept</h2>
+                <button onClick={() => setPickerOpen(false)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+              </div>
+              <input
+                type="text"
+                value={pickerSearch}
+                onChange={e => setPickerSearch(e.target.value)}
+                placeholder="Search by name…"
+                autoFocus
+                className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-400 placeholder-gray-400"
+              />
+            </div>
+            <div className="overflow-y-auto flex-1">
+              {(() => {
+                const filtered = pickerEmployees.filter(e =>
+                  !pickerSearch.trim() || e.name.toLowerCase().includes(pickerSearch.toLowerCase())
+                )
+                if (filtered.length === 0) return (
+                  <p className="text-sm text-gray-400 text-center py-8">No employees found</p>
+                )
+                return filtered.map(emp => {
+                  const homeDeptName = departments.find(d => d.id === emp.department_id)?.name ?? emp.department_id
+                  return (
+                    <button
+                      key={emp.id}
+                      onClick={() => handleAddFromDept(emp)}
+                      disabled={addingFromDept}
+                      className="w-full flex items-center justify-between px-4 py-3 hover:bg-indigo-50 transition-colors text-left border-b border-gray-50 last:border-0 disabled:opacity-50"
+                    >
+                      <span className="text-sm font-medium text-gray-900">{emp.name}</span>
+                      <span className="text-xs px-2 py-0.5 rounded bg-blue-50 text-blue-500 border border-blue-100 whitespace-nowrap ml-3">
+                        {homeDeptName}
+                      </span>
+                    </button>
+                  )
+                })
+              })()}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   )
 }

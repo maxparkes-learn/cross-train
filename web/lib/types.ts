@@ -1,6 +1,7 @@
 export interface Station {
   id: string
   name: string
+  department_id: string
   required_skill_level: number
   required_headcount: number
   required_certification: number
@@ -27,6 +28,8 @@ export interface Employee {
   sort_order: number
   station_competencies: Record<string, number>
   group_ids: string[]
+  secondary_department_ids?: string[]
+  hire_date?: string
   created_at?: string
 }
 

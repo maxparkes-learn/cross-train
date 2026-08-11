@@ -14,6 +14,7 @@ import {
   fetchSettings,
   fetchDepartments,
   fetchUserDepartments,
+  fetchPendingUserCount,
 } from '@/lib/db'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter, usePathname } from 'next/navigation'
@@ -33,6 +34,7 @@ interface AppContextValue {
   userRole: UserRole
   departments: Department[]
   activeDepartment: Department | null
+  hasEditAccess: boolean
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
@@ -65,6 +67,8 @@ export default function AppShell({
     competencyColors: { ...DEFAULT_COMPETENCY_COLORS },
   })
   const [departments, setDepartments] = useState<Department[]>([])
+  const [editDeptIds, setEditDeptIds] = useState<Set<string>>(new Set())
+  const [pendingUserCount, setPendingUserCount] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -82,14 +86,21 @@ export default function AppShell({
     })
   }, [])
 
+  const [previewAsManager, setPreviewAsManager] = useState(false)
+
   const isAdmin = userRole === 'admin' || userRole === 'superadmin'
+  const effectiveRole: UserRole = isAdmin && previewAsManager ? 'manager' : userRole
+  const effectiveIsAdmin = effectiveRole === 'admin' || effectiveRole === 'superadmin'
   const activeDepartment = departments.find((d) => d.id === activeDeptId) ?? null
+  const hasEditAccess = effectiveIsAdmin || (!previewAsManager && editDeptIds.has(activeDeptId))
 
   const refreshDepartments = useCallback(async () => {
-    const data = isAdmin
-      ? await fetchDepartments()
-      : await fetchUserDepartments(user.email!)
-    setDepartments(data)
+    const [allDepts, userDepts] = await Promise.all([
+      fetchDepartments(),
+      isAdmin ? Promise.resolve(null) : fetchUserDepartments(user.email!),
+    ])
+    setDepartments(allDepts)
+    setEditDeptIds(isAdmin ? new Set(allDepts.map(d => d.id)) : new Set((userDepts ?? []).map(d => d.id)))
   }, [isAdmin, user.email])
 
   const refreshStations = useCallback(async () => {
@@ -104,16 +115,20 @@ export default function AppShell({
 
   const refreshData = useCallback(async () => {
     setIsLoading(true)
-    const [s, e, cfg, depts] = await Promise.all([
+    const [s, e, cfg, allDepts, userDepts, pendingCount] = await Promise.all([
       fetchStations(activeDeptId),
       fetchEmployees(activeDeptId),
       fetchSettings(activeDeptId),
-      isAdmin ? fetchDepartments() : fetchUserDepartments(user.email!),
+      fetchDepartments(),
+      isAdmin ? Promise.resolve(null) : fetchUserDepartments(user.email!),
+      isAdmin ? fetchPendingUserCount() : Promise.resolve(0),
     ])
     setStations(s)
     setEmployees(e)
     setSettings(cfg)
-    setDepartments(depts)
+    setDepartments(allDepts)
+    setEditDeptIds(isAdmin ? new Set(allDepts.map(d => d.id)) : new Set((userDepts ?? []).map(d => d.id)))
+    setPendingUserCount(pendingCount)
     setIsLoading(false)
   }, [activeDeptId, isAdmin, user.email])
 
@@ -131,9 +146,10 @@ export default function AppShell({
     { href: `/${activeDeptId}/matrix`, label: 'Cross-Training Matrix', icon: '⊞' },
     { href: `/${activeDeptId}/schedule`, label: 'Schedule', icon: '📋' },
     { href: `/${activeDeptId}/rotation`, label: 'Rotation Dashboard', icon: '📊' },
-    ...(isAdmin ? [{ href: `/${activeDeptId}/activity`, label: 'Activity Log', icon: '🕐' }] : []),
-    ...(isAdmin ? [{ href: `/${activeDeptId}/users`, label: 'Users', icon: '👥' }] : []),
-    ...(isAdmin ? [{ href: `/${activeDeptId}/employees`, label: 'Employees', icon: '👤' }] : []),
+    { href: `/${activeDeptId}/attention`, label: 'Needs Attention', icon: '⚠️' },
+    ...(effectiveIsAdmin ? [{ href: `/${activeDeptId}/activity`, label: 'Activity Log', icon: '🕐' }] : []),
+    ...(effectiveIsAdmin ? [{ href: `/${activeDeptId}/users`, label: 'Users', icon: '👥' }] : []),
+    ...(effectiveIsAdmin ? [{ href: `/${activeDeptId}/employees`, label: 'Employees', icon: '👤' }] : []),
   ]
 
   const activeLabel = navItems.find((n) => pathname.startsWith(n.href))?.label ?? 'Rotation & Safety'
@@ -151,9 +167,10 @@ export default function AppShell({
         refreshDepartments,
         updateSettings: setSettings,
         user,
-        userRole,
+        userRole: effectiveRole,
         departments,
         activeDepartment,
+        hasEditAccess,
       }}
     >
       <div className="flex h-screen overflow-hidden bg-gray-50">
@@ -175,7 +192,7 @@ export default function AppShell({
             stations={stations}
             settings={settings}
             user={user}
-            userRole={userRole}
+            userRole={effectiveRole}
             departments={departments}
             activeDepartment={activeDepartment}
             activeDeptId={activeDeptId}
@@ -185,6 +202,10 @@ export default function AppShell({
             onDepartmentsChange={refreshDepartments}
             collapsed={sidebarCollapsed && !sidebarOpen}
             onToggleCollapsed={toggleSidebarCollapsed}
+            canTogglePreview={isAdmin}
+            previewAsManager={previewAsManager}
+            onTogglePreview={() => setPreviewAsManager(p => !p)}
+            pendingUserCount={pendingUserCount}
           />
         </aside>
 
@@ -201,6 +222,18 @@ export default function AppShell({
             <span className="font-semibold text-gray-900 text-sm">{activeLabel}</span>
           </div>
 
+          {previewAsManager && (
+            <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center gap-3 text-sm text-amber-700 shrink-0">
+              <span className="font-medium">Previewing as Manager</span>
+              <span className="text-amber-500 text-xs">— view-only access, admin nav hidden</span>
+              <button
+                onClick={() => setPreviewAsManager(false)}
+                className="ml-auto text-xs font-medium text-amber-600 hover:text-amber-900 border border-amber-300 rounded px-2 py-0.5 hover:bg-amber-100 transition-colors"
+              >
+                Exit Preview
+              </button>
+            </div>
+          )}
           <main className="flex-1 overflow-y-auto p-6">{children}</main>
         </div>
       </div>

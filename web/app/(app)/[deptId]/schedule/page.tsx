@@ -23,7 +23,7 @@ function todayStr() {
 }
 
 export default function SchedulePage() {
-  const { stations, employees, settings, user, activeDepartment } = useApp()
+  const { stations, employees, settings, user, activeDepartment, hasEditAccess, userRole } = useApp()
   const { skillLabels, certLabels } = settings
 
   const [scenarioName, setScenarioName] = useState('Balanced')
@@ -38,17 +38,24 @@ export default function SchedulePage() {
   const [defaultHours, setDefaultHours] = useState(8)
   const [finalizing, setFinalizing] = useState(false)
   const [finalizeMsg, setFinalizeMsg] = useState('')
-  const [templateSaving, setTemplateSaving] = useState(false)
-  const [templateMsg, setTemplateMsg] = useState('')
   const [finalized, setFinalized] = useState(false)
+
+  type SchedulePreset = { name: string; gridAssignments: Record<string, string> }
+  const [presets, setPresets] = useState<SchedulePreset[]>([])
+  const [savePresetOpen, setSavePresetOpen] = useState(false)
+  const [presetName, setPresetName] = useState('')
+  const [loadPresetOpen, setLoadPresetOpen] = useState(false)
+  const savePresetRef = useRef<HTMLDivElement>(null)
+  const loadPresetRef = useRef<HTMLDivElement>(null)
 
   const draftLoaded = useRef(false)
   const draftSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Load draft on mount — restore today's in-progress schedule
+  // Load draft + presets on mount
   useEffect(() => {
     if (!activeDepartment?.id) return
-    fetchSetting('schedule_draft', activeDepartment.id).then(v => {
+    const deptId = activeDepartment.id
+    fetchSetting('schedule_draft', deptId).then(v => {
       if (v && typeof v === 'object') {
         const draft = v as {
           date: string
@@ -69,6 +76,21 @@ export default function SchedulePage() {
         }
       }
       draftLoaded.current = true
+    })
+    // Load named presets; migrate legacy schedule_default if needed
+    fetchSetting('schedule_presets', deptId).then(async v => {
+      if (Array.isArray(v)) {
+        setPresets(v as SchedulePreset[])
+      } else {
+        // Migrate old single default
+        const old = await fetchSetting('schedule_default', deptId)
+        if (old && typeof old === 'object') {
+          const migrated: SchedulePreset[] = [{ name: 'Default', gridAssignments: old as Record<string, string> }]
+          setPresets(migrated)
+          await upsertSetting('schedule_presets', migrated, deptId)
+          await upsertSetting('schedule_default', null, deptId)
+        }
+      }
     })
   }, [activeDepartment?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -123,6 +145,58 @@ export default function SchedulePage() {
     )
   }
 
+  // Click-outside handlers for preset popovers
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (savePresetRef.current && !savePresetRef.current.contains(e.target as Node)) setSavePresetOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (loadPresetRef.current && !loadPresetRef.current.contains(e.target as Node)) setLoadPresetOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const handleSavePreset = async () => {
+    const trimmed = presetName.trim()
+    if (!trimmed || !schedule || !activeDepartment) return
+    const grid = scheduleToGrid(schedule)
+    const updated = [...presets.filter(p => p.name !== trimmed), { name: trimmed, gridAssignments: grid }]
+    setPresets(updated)
+    await upsertSetting('schedule_presets', updated, activeDepartment.id)
+    setSavePresetOpen(false)
+    setPresetName('')
+  }
+
+  const handleLoadPreset = (preset: SchedulePreset) => {
+    const validEmpIds = new Set(presentEmployees.map((e) => e.id))
+    const validStationIds = new Set(stations.map((s) => s.id))
+    const filtered: Record<string, string> = {}
+    for (const [empId, stnId] of Object.entries(preset.gridAssignments)) {
+      if (validEmpIds.has(empId) && validStationIds.has(stnId)) filtered[empId] = stnId
+    }
+    setSchedule(buildEmptySchedule())
+    setActiveScenario(preset.name)
+    setEditMode(true)
+    setGridAssignments(filtered)
+    setCtAssignments([])
+    setFinalized(false)
+    setFinalizeMsg('')
+    setLoadPresetOpen(false)
+  }
+
+  const handleDeletePreset = async (name: string) => {
+    if (!activeDepartment) return
+    const updated = presets.filter(p => p.name !== name)
+    setPresets(updated)
+    await upsertSetting('schedule_presets', updated, activeDepartment.id)
+  }
+
   const handleReset = () => {
     setSchedule(null)
     setActiveScenario('')
@@ -131,7 +205,6 @@ export default function SchedulePage() {
     setCtAssignments([])
     setFinalized(false)
     setFinalizeMsg('')
-    setTemplateMsg('')
   }
 
   const handleAssignManually = () => {
@@ -142,13 +215,11 @@ export default function SchedulePage() {
     setCtAssignments([])
     setFinalized(false)
     setFinalizeMsg('')
-    setTemplateMsg('')
   }
 
   const handleGenerate = async () => {
     setGenerating(true)
     setFinalizeMsg('')
-    setTemplateMsg('')
     try {
       const logs = await fetchAllAssignmentLogs()
       const newSchedule = generateSchedule(stations, employees, absentIds, logs, scenarioName)
@@ -188,42 +259,6 @@ export default function SchedulePage() {
       }
       return { ...prev, [empId]: stationId }
     })
-  }
-
-  const handleSaveDefault = async () => {
-    if (!activeDepartment) return
-    setTemplateSaving(true)
-    setTemplateMsg('')
-    try {
-      await upsertSetting('schedule_default', gridAssignments, activeDepartment.id)
-      setTemplateMsg('Default saved ✓')
-    } finally {
-      setTemplateSaving(false)
-    }
-  }
-
-  const handleLoadDefault = async () => {
-    if (!activeDepartment) return
-    setTemplateMsg('')
-    const saved = await fetchSetting('schedule_default', activeDepartment.id)
-    if (!saved || typeof saved !== 'object') {
-      setTemplateMsg('No default saved yet')
-      return
-    }
-    // Filter out employees who are absent or no longer exist
-    const validEmpIds = new Set(presentEmployees.map((e) => e.id))
-    const validStationIds = new Set(stations.map((s) => s.id))
-    const filtered: Record<string, string> = {}
-    for (const [empId, stnId] of Object.entries(saved as Record<string, string>)) {
-      if (validEmpIds.has(empId) && validStationIds.has(stnId)) filtered[empId] = stnId
-    }
-    setSchedule(buildEmptySchedule())
-    setActiveScenario('Default')
-    setEditMode(true)
-    setGridAssignments(filtered)
-    setCtAssignments([])
-    setFinalized(false)
-    setFinalizeMsg('')
   }
 
   const handleFinalizeDay = async () => {
@@ -320,40 +355,118 @@ export default function SchedulePage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-gray-900">Schedule</h1>
+      <div className="flex items-center gap-3">
+        <h1 className="text-2xl font-bold text-gray-900">Schedule</h1>
+        {userRole === 'manager' && (
+          <span className={`text-xs font-medium px-2.5 py-0.5 rounded-full ${
+            hasEditAccess ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-100 text-gray-500'
+          }`}>
+            {hasEditAccess ? 'Edit' : 'View only'}
+          </span>
+        )}
+      </div>
 
       {/* Controls */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
         <div className="flex flex-wrap items-end gap-3">
-          <div className="flex-1 min-w-48">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Scheduling Strategy</label>
-            <select
-              value={scenarioName}
-              onChange={(e) => setScenarioName(e.target.value)}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            >
-              {Object.keys(SCENARIOS).map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-          <button onClick={handleGenerate} disabled={generating} className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors">
-            {generating ? 'Generating…' : 'Generate Schedule'}
-          </button>
-          <button onClick={handleAssignManually} className="border border-gray-300 hover:bg-gray-50 text-gray-700 text-sm font-medium px-5 py-2 rounded-lg transition-colors">
-            Assign Manually
-          </button>
-          <button onClick={handleLoadDefault} className="border border-gray-300 hover:bg-gray-50 text-gray-700 text-sm font-medium px-5 py-2 rounded-lg transition-colors">
-            Load Default ↓
-          </button>
-          {schedule && (
-            <button onClick={handleReset} className="border border-red-200 hover:bg-red-50 text-red-500 text-sm font-medium px-5 py-2 rounded-lg transition-colors ml-auto">
-              Reset ×
-            </button>
+          {hasEditAccess && (
+            <>
+              <div className="flex-1 min-w-48">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Scheduling Strategy</label>
+                <select
+                  value={scenarioName}
+                  onChange={(e) => setScenarioName(e.target.value)}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  {Object.keys(SCENARIOS).map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+              <button onClick={handleGenerate} disabled={generating} className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors">
+                {generating ? 'Generating…' : 'Generate Schedule'}
+              </button>
+              <button onClick={handleAssignManually} className="border border-gray-300 hover:bg-gray-50 text-gray-700 text-sm font-medium px-5 py-2 rounded-lg transition-colors">
+                Assign Manually
+              </button>
+            </>
+          )}
+
+          {/* Preset buttons — only when a schedule exists and user has edit access */}
+          {schedule && hasEditAccess && (
+            <>
+              {/* Load Preset */}
+              {presets.length > 0 && (
+                <div className="relative" ref={loadPresetRef}>
+                  <button
+                    onClick={() => setLoadPresetOpen(o => !o)}
+                    className="border border-gray-300 hover:bg-gray-50 text-gray-700 text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+                  >
+                    Load Preset ▼
+                  </button>
+                  {loadPresetOpen && (
+                    <div className="absolute left-0 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg z-20 py-1">
+                      {presets.map(p => (
+                        <div key={p.name} className="flex items-center gap-1 px-2 py-1 hover:bg-gray-50">
+                          <button
+                            onClick={() => handleLoadPreset(p)}
+                            className="flex-1 text-left text-sm text-gray-700 px-1 py-0.5 truncate"
+                          >
+                            {p.name}
+                          </button>
+                          <button
+                            onClick={() => handleDeletePreset(p.name)}
+                            className="text-gray-300 hover:text-red-500 transition-colors px-1 text-xs flex-shrink-0"
+                            title="Delete preset"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Save as Preset */}
+              <div className="relative" ref={savePresetRef}>
+                <button
+                  onClick={() => { setSavePresetOpen(o => !o); setPresetName('') }}
+                  className="border border-gray-300 hover:bg-gray-50 text-gray-700 text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+                >
+                  Save as Preset
+                </button>
+                {savePresetOpen && (
+                  <div className="absolute left-0 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg z-20 p-3 space-y-2">
+                    <input
+                      autoFocus
+                      type="text"
+                      value={presetName}
+                      onChange={e => setPresetName(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') handleSavePreset(); if (e.key === 'Escape') setSavePresetOpen(false) }}
+                      placeholder="e.g. Monday AM"
+                      className="w-full border border-gray-300 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                    <button
+                      onClick={handleSavePreset}
+                      disabled={!presetName.trim()}
+                      className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-medium px-3 py-1.5 rounded-md transition-colors"
+                    >
+                      Save
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <button onClick={handleReset} className="border border-red-200 hover:bg-red-50 text-red-500 text-sm font-medium px-5 py-2 rounded-lg transition-colors ml-auto">
+                Reset ×
+              </button>
+            </>
           )}
         </div>
-        <div className="flex items-center justify-between mt-2">
-          <p className="text-xs text-gray-500">{SCENARIO_DESCRIPTIONS[scenarioName]}</p>
-          {templateMsg && <p className="text-xs text-gray-500">{templateMsg}</p>}
-        </div>
+        {hasEditAccess && (
+          <div className="mt-2">
+            <p className="text-xs text-gray-500">{SCENARIO_DESCRIPTIONS[scenarioName]}</p>
+          </div>
+        )}
       </div>
 
       {schedule && (
@@ -388,20 +501,23 @@ export default function SchedulePage() {
               <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
                 <div>
                   <h2 className="font-semibold text-gray-900">Assignments</h2>
-                  {activeScenario && activeScenario !== 'Manual' && activeScenario !== 'Default' && (
+                  {activeScenario === 'Manual' && <p className="text-xs text-gray-500">Manually assigned</p>}
+                  {activeScenario && activeScenario !== 'Manual' && Object.keys(SCENARIOS).includes(activeScenario) && (
                     <p className="text-xs text-gray-500">Strategy: {activeScenario}</p>
                   )}
-                  {(activeScenario === 'Manual' || activeScenario === 'Default') && (
-                    <p className="text-xs text-gray-500">{activeScenario === 'Default' ? 'Loaded from default' : 'Manually assigned'}</p>
+                  {activeScenario && activeScenario !== 'Manual' && !Object.keys(SCENARIOS).includes(activeScenario) && (
+                    <p className="text-xs text-gray-500">Preset: {activeScenario}</p>
                   )}
                 </div>
                 <div className="flex gap-2">
                   <button onClick={handleGeneratePDF} className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-50 transition-colors">
                     Download PDF
                   </button>
-                  <button onClick={handleEnterEdit} className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-50 transition-colors">
-                    Edit Assignments
-                  </button>
+                  {hasEditAccess && (
+                    <button onClick={handleEnterEdit} className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-50 transition-colors">
+                      Edit Assignments
+                    </button>
+                  )}
                 </div>
               </div>
               <div className="overflow-x-auto">
@@ -457,13 +573,6 @@ export default function SchedulePage() {
                   <p className="text-xs text-gray-500">Click a cell to assign · grayed = unqualified or already assigned</p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={handleSaveDefault}
-                    disabled={templateSaving}
-                    className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 text-gray-600 hover:bg-gray-50 transition-colors disabled:opacity-50"
-                  >
-                    {templateSaving ? 'Saving…' : 'Save as Default ↑'}
-                  </button>
                   <button onClick={handleApplyGrid} className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-1.5 rounded-lg transition-colors">
                     Apply Changes
                   </button>
@@ -553,7 +662,7 @@ export default function SchedulePage() {
           )}
 
           {/* Cross-training assignments */}
-          {!editMode && unassignedIds.length > 0 && (
+          {!editMode && hasEditAccess && unassignedIds.length > 0 && (
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-4">
               <div>
                 <h2 className="font-semibold text-gray-900">Cross-Training Assignments</h2>
@@ -637,7 +746,7 @@ export default function SchedulePage() {
           )}
 
           {/* Finalize day */}
-          {!editMode && (
+          {!editMode && hasEditAccess && (
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-4">
               <div>
                 <h2 className="font-semibold text-gray-900">Finalize Day</h2>
@@ -670,7 +779,9 @@ export default function SchedulePage() {
 
       {!schedule && (
         <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-700">
-          Click &quot;Generate Schedule&quot; to assign employees to stations, or use &quot;Assign Manually&quot; / &quot;Load Default&quot;.
+          {hasEditAccess
+            ? 'Click "Generate Schedule" to assign employees to stations, or use "Assign Manually" to build one from scratch.'
+            : 'No schedule has been generated for today yet.'}
         </div>
       )}
     </div>
