@@ -157,6 +157,17 @@ export interface UserProfile {
   display_name: string
   role: UserRole
   created_at?: string
+  /** Last actual OAuth authentication. Rare — persisted sessions do not re-trigger it. */
+  last_sign_in_at?: string | null
+  /** Last authenticated page load. This is the real "are they using it" signal. */
+  last_seen_at?: string | null
+}
+
+/** One recorded sign-in. Page loads are not logged here, only real authentications. */
+export interface LoginEvent {
+  id?: number
+  user_email: string
+  signed_in_at: string
 }
 
 export const ADMIN_EMAIL = 'max.parkes@clutch.ca'

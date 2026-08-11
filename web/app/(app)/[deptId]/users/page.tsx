@@ -13,9 +13,66 @@ import {
   removeUserFromDepartment,
   deleteUserProfile,
   bulkInviteManagers,
+  fetchSignInCounts,
 } from '@/lib/db'
+import {
+  formatCompactDate,
+  formatDateTime,
+  formatDaysAgo,
+  isStale,
+  STALE_ACTIVITY_DAYS,
+} from '@/lib/format'
 
 type BulkRow = { email: string; deptId: string | null; csvDeptName: string | null }
+
+/**
+ * Shows when a user was last active, with the underlying sign-in detail on hover.
+ *
+ * Activity is the headline number rather than sign-in, because a persisted session
+ * means someone can use the app daily while their last actual sign-in is months old.
+ */
+function LastActiveCell({
+  profile,
+  signInCount,
+}: {
+  profile: UserProfile
+  signInCount: number
+}) {
+  const lastSeen = profile.last_seen_at
+  const lastSignIn = profile.last_sign_in_at
+
+  if (!lastSeen && !lastSignIn) {
+    return (
+      <span className="text-gray-300" title="No sign-in or activity recorded yet">
+        —
+      </span>
+    )
+  }
+
+  // Fall back to sign-in if activity was never stamped (a user who authenticated
+  // before this tracking existed, or who never loaded a page after signing in).
+  const shown = lastSeen ?? lastSignIn!
+
+  const title = [
+    `Last active: ${formatDateTime(shown)} (${formatDaysAgo(shown)})`,
+    lastSignIn ? `Signed in: ${formatDateTime(lastSignIn)}` : 'Signed in: not recorded',
+    signInCount > 0
+      ? `${signInCount} sign-in${signInCount === 1 ? '' : 's'} recorded`
+      : 'No sign-ins recorded yet',
+  ].join('\n')
+
+  return (
+    <span className="inline-flex items-center gap-1 whitespace-nowrap" title={title}>
+      <span>{formatCompactDate(shown)}</span>
+      {isStale(shown, STALE_ACTIVITY_DAYS) && (
+        <span className="text-xs text-amber-500" aria-hidden="true">
+          ⚠
+        </span>
+      )}
+      <span className="sr-only">{title.split('\n').join(' · ')}</span>
+    </span>
+  )
+}
 
 function parseCsvRows(text: string, depts: Array<{ id: string; name: string }>): BulkRow[] {
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
@@ -78,6 +135,7 @@ export default function UsersPage() {
 
   const [profiles, setProfiles] = useState<UserProfile[]>([])
   const [deptAssignments, setDeptAssignments] = useState<Record<string, Set<string>>>({})
+  const [signInCounts, setSignInCounts] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
 
   const [inviteEmail, setInviteEmail] = useState('')
@@ -105,8 +163,13 @@ export default function UsersPage() {
 
   const loadUsers = async () => {
     setLoading(true)
-    const [p, assignments] = await Promise.all([fetchAllUserProfiles(), fetchAllDepartmentAssignments()])
+    const [p, assignments, counts] = await Promise.all([
+      fetchAllUserProfiles(),
+      fetchAllDepartmentAssignments(),
+      fetchSignInCounts(),
+    ])
     setProfiles(p)
+    setSignInCounts(counts)
     const map: Record<string, Set<string>> = {}
     for (const { user_email, department_id } of assignments) {
       if (!map[user_email]) map[user_email] = new Set()
@@ -395,6 +458,7 @@ export default function UsersPage() {
               <tr className="border-b border-gray-100 bg-gray-50">
                 <th className="px-4 py-2.5 text-left font-medium text-gray-500 text-xs">User</th>
                 <th className="px-4 py-2.5 text-left font-medium text-gray-500 text-xs">Role</th>
+                <th className="px-4 py-2.5 text-left font-medium text-gray-500 text-xs whitespace-nowrap">Last active</th>
                 <th className="px-4 py-2.5 text-left font-medium text-gray-500 text-xs">
                   Department Access
                   <span className="ml-1.5 font-normal text-gray-400">· managers always have view; set edit per department</span>
@@ -434,6 +498,10 @@ export default function UsersPage() {
                           {profile.role === 'superadmin' ? 'Superadmin' : profile.role === 'admin' ? 'Admin' : 'Manager'}
                         </span>
                       )}
+                    </td>
+
+                    <td className="px-4 py-3 whitespace-nowrap text-xs text-gray-500">
+                      <LastActiveCell profile={profile} signInCount={signInCounts[profile.email] ?? 0} />
                     </td>
 
                     <td className="px-4 py-2.5">

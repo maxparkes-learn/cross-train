@@ -9,6 +9,13 @@ const TIME_ZONE = 'America/Toronto'
  */
 export const STALE_COMPETENCY_DAYS = 14
 
+/**
+ * Days of inactivity after which a user is flagged in the Users tab. Deliberately
+ * separate from STALE_COMPETENCY_DAYS — "this record needs review" and "this person
+ * has stopped using the tool" are different questions with different tolerances.
+ */
+export const STALE_ACTIVITY_DAYS = 30
+
 /** "Jul 28", or "Dec 31, 2025" when the date falls outside the current year. */
 export function formatCompactDate(iso: string, now: Date = new Date()): string {
   const d = new Date(iso)

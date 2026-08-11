@@ -49,6 +49,18 @@ export async function renameDepartment(id: string, name: string): Promise<void> 
 
 // ---- User Profiles ----
 
+/**
+ * Ensures a profile row exists and stamps the user as active.
+ *
+ * Called from the authenticated layout, so this runs on every page load. That is
+ * what makes last_seen_at meaningful — unlike last_sign_in_at, which a persisted
+ * session never re-triggers. The timestamp comes from the server rather than the
+ * browser, so it cannot be skewed by a user's machine clock.
+ *
+ * Writing on every page load is deliberate and cheap here: there are a couple of
+ * dozen users, and it costs no extra round trip because the existing insert/update
+ * pair already ran.
+ */
 export async function upsertUserProfile(email: string, displayName: string): Promise<void> {
   const db = createClient()
   // Insert if new (preserves role for pre-invited users); update display_name if exists
@@ -58,6 +70,74 @@ export async function upsertUserProfile(email: string, displayName: string): Pro
   if (error) {
     // Already exists — update display_name only, leave role untouched
     await db.from('user_profiles').update({ display_name: displayName }).eq('email', email)
+  }
+  await touchLastSeen(email)
+}
+
+/**
+ * Stamps the user as active. Deliberately a separate, failure-tolerant write rather
+ * than part of the insert above: if this ships before the migration adds the column,
+ * PostgREST rejects the whole row, and folding it in would mean a brand-new user
+ * silently gets no profile row at all. Keeping it separate makes deploy order
+ * irrelevant — pre-migration this no-ops and everything else behaves as before.
+ *
+ * The timestamp is the server's, since this is called from a server component, so a
+ * user's machine clock cannot skew it.
+ */
+async function touchLastSeen(email: string): Promise<void> {
+  const db = createClient()
+  const { error } = await db
+    .from('user_profiles')
+    .update({ last_seen_at: new Date().toISOString() })
+    .eq('email', email)
+  if (error) console.error('last_seen_at update failed', error)
+}
+
+/**
+ * Records a real OAuth authentication: stamps last_sign_in_at and appends to the
+ * login log. Call this only from the auth callback, never from a page load.
+ *
+ * Best-effort — a failure here must not block the user from getting into the app,
+ * so nothing throws. Assumes the profile row already exists; the callback calls
+ * upsertUserProfile first so that holds even on a brand-new user's first sign-in.
+ */
+export async function recordSignIn(email: string): Promise<void> {
+  const db = createClient()
+  const now = new Date().toISOString()
+  try {
+    const [profileResult, eventResult] = await Promise.all([
+      db.from('user_profiles').update({ last_sign_in_at: now, last_seen_at: now }).eq('email', email),
+      db.from('login_events').insert({ user_email: email }),
+    ])
+    if (profileResult.error) console.error('last_sign_in_at update failed', profileResult.error)
+    if (eventResult.error) console.error('login_events insert failed', eventResult.error)
+  } catch (err) {
+    console.error('recordSignIn failed', err)
+  }
+}
+
+/**
+ * Total recorded sign-ins per user email.
+ *
+ * Counts client-side over the whole log, matching the aggregation style used
+ * elsewhere in this file. Safe because login_events records authentications rather
+ * than page loads, so it grows by a handful of rows a month for a couple of dozen
+ * users. Never throws — this only enriches a tooltip.
+ */
+export async function fetchSignInCounts(): Promise<Record<string, number>> {
+  const db = createClient()
+  try {
+    const { data, error } = await db.from('login_events').select('user_email')
+    if (error) throw error
+
+    const counts: Record<string, number> = {}
+    for (const row of (data ?? []) as { user_email: string }[]) {
+      counts[row.user_email] = (counts[row.user_email] ?? 0) + 1
+    }
+    return counts
+  } catch (err) {
+    console.error('fetchSignInCounts failed', err)
+    return {}
   }
 }
 
