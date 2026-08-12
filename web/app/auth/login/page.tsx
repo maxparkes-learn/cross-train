@@ -15,6 +15,10 @@ function LoginContent() {
     const detail = searchParams.get('detail')
     if (err === 'unauthorized_domain') {
       setError('Access denied. Only @clutch.ca accounts are allowed.')
+    } else if (err === 'not_invited') {
+      setError(
+        'This app is invite-only and your account has not been given access. Ask an administrator to add you, then sign in again.',
+      )
     } else if (err === 'auth_failed') {
       const decoded = detail ? decodeURIComponent(detail).toLowerCase() : ''
       const isPkce = decoded.includes('pkce') || decoded.includes('code_verifier') || decoded.includes('code verifier')

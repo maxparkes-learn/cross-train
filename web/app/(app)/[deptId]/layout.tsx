@@ -19,7 +19,12 @@ export default async function DeptLayout({
   if (!user) redirect('/auth/login')
 
   const profile = await fetchUserProfile(user.email!)
-  const userRole: UserRole = profile?.role ?? 'manager'
+  // Defence in depth. The parent layout already ejects accounts with no profile, but
+  // this must not fall back to 'manager' — defaulting a stranger to a real role is
+  // exactly how unintended access happens.
+  if (!profile) redirect('/auth/signout?reason=not_invited')
+
+  const userRole: UserRole = profile.role
   const isAdmin = userRole === 'admin' || userRole === 'superadmin'
 
   if (!isAdmin) {

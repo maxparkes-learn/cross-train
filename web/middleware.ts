@@ -50,6 +50,8 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|auth/callback|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    // auth/signout is excluded for the same reason as auth/callback: it must be
+    // reachable while still signed in, or ejecting a non-invited user would loop.
+    '/((?!_next/static|_next/image|favicon.ico|auth/callback|auth/signout|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
   ],
 }

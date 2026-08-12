@@ -16,6 +16,7 @@ import {
   DEFAULT_SKILL_LABELS,
   DEFAULT_CERT_LABELS,
   DEFAULT_COMPETENCY_COLORS,
+  ADMIN_EMAIL,
 } from './types'
 
 // ---- Departments ----
@@ -61,17 +62,42 @@ export async function renameDepartment(id: string, name: string): Promise<void> 
  * dozen users, and it costs no extra round trip because the existing insert/update
  * pair already ran.
  */
-export async function upsertUserProfile(email: string, displayName: string): Promise<void> {
+/**
+ * Resolves a signed-in account against the invite list.
+ *
+ * Access is invite-only: returns null when the account has no profile, and the caller
+ * is expected to eject them. This deliberately no longer creates a profile on sight —
+ * doing so silently granted the manager role to any @clutch.ca account that merely
+ * opened the app, which is how employee records ended up in the Users tab.
+ *
+ * For an invited account it refreshes display_name from Google and stamps activity.
+ */
+export async function syncSignedInUser(
+  email: string,
+  displayName: string,
+): Promise<UserProfile | null> {
   const db = createClient()
-  // Insert if new (preserves role for pre-invited users); update display_name if exists
-  const { error } = await db
-    .from('user_profiles')
-    .insert({ email, display_name: displayName, role: 'manager' })
-  if (error) {
-    // Already exists — update display_name only, leave role untouched
+
+  let profile = await fetchUserProfile(email)
+
+  // Anti-lockout escape hatch. Sign-in now depends on a profile row existing, so
+  // without this the owner losing their own row would lock everyone out of the app
+  // permanently with no recovery path short of the SQL editor.
+  if (!profile && email === ADMIN_EMAIL) {
+    await db
+      .from('user_profiles')
+      .insert({ email, display_name: displayName, role: 'superadmin' })
+    profile = await fetchUserProfile(email)
+  }
+
+  if (!profile) return null
+
+  if (profile.display_name !== displayName) {
     await db.from('user_profiles').update({ display_name: displayName }).eq('email', email)
   }
   await touchLastSeen(email)
+
+  return profile
 }
 
 /**
@@ -98,8 +124,8 @@ async function touchLastSeen(email: string): Promise<void> {
  * login log. Call this only from the auth callback, never from a page load.
  *
  * Best-effort — a failure here must not block the user from getting into the app,
- * so nothing throws. Assumes the profile row already exists; the callback calls
- * upsertUserProfile first so that holds even on a brand-new user's first sign-in.
+ * so nothing throws. The profile row is guaranteed to exist: the callback only reaches
+ * this after syncSignedInUser has confirmed the account is invited.
  */
 export async function recordSignIn(email: string): Promise<void> {
   const db = createClient()
@@ -141,9 +167,22 @@ export async function fetchSignInCounts(): Promise<Record<string, number>> {
   }
 }
 
+/**
+ * Returns null only when no such profile exists, and throws on any other failure.
+ *
+ * That distinction is load-bearing now that access is invite-only: null means "not
+ * invited" and gets the account signed out, so quietly returning null for a transient
+ * database error would eject legitimate users during a blip. maybeSingle() gives 0
+ * rows without treating it as an error, leaving real errors to surface as errors.
+ */
 export async function fetchUserProfile(email: string): Promise<UserProfile | null> {
   const db = createClient()
-  const { data } = await db.from('user_profiles').select('*').eq('email', email).single()
+  const { data, error } = await db
+    .from('user_profiles')
+    .select('*')
+    .eq('email', email)
+    .maybeSingle()
+  if (error) throw error
   return data as UserProfile | null
 }
 
