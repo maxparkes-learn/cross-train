@@ -272,7 +272,7 @@ function buildMatchData(
 // ---- Page ----
 
 export default function EmployeesPage() {
-  const { userRole, departments } = useApp()
+  const { userRole, departments, refreshEmployees } = useApp()
   const router = useRouter()
   const isAdmin = userRole === 'admin' || userRole === 'superadmin'
 
@@ -455,6 +455,13 @@ export default function EmployeesPage() {
         const nameHit = nameUpdates.find(({ m }) => m.employeeId === e.id)
         return { ...e, hire_date: hit.bamboo.hireDate, name: nameHit ? nameHit.bamboo.name : e.name }
       }))
+
+      // This page keeps its own employee list, so patching local state above only fixes
+      // what is visible here. Without refreshing the shared context, the matrix for the
+      // department you are currently in keeps rendering stale rows and the imported
+      // tenure looks like it never applied — switching departments would mask it by
+      // triggering a refetch, which makes it look like a single-department problem.
+      await refreshEmployees()
 
       const nameCount = nameUpdates.length
       setApplyMsg(`✓ Updated hire dates for ${toApply.length} employee${toApply.length !== 1 ? 's' : ''}${nameCount > 0 ? ` and corrected ${nameCount} name${nameCount !== 1 ? 's' : ''}` : ''}.`)

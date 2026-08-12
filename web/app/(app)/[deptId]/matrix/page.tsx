@@ -589,6 +589,16 @@ export default function MatrixPage() {
     return change ? new Date(change.changed_at).getTime() : -1
   }
 
+  /**
+   * Hire date read from context, for the same reason as above: `rows` is only rebuilt
+   * when the employee count changes, so a hire-date import — which changes no counts —
+   * would otherwise never appear here. Falls back to the row's own value for a new
+   * employee that has not been saved yet and so is not in context.
+   */
+  const hireDateById = new Map(employees.map((e) => [e.id, e.hire_date ?? null]))
+  const hireDateOf = (row: { id: string | null; hireDate: string | null }) =>
+    (row.id ? hireDateById.get(row.id) : null) ?? row.hireDate
+
   const totalPresent = rows.filter((r) => r.id && r.isPresent).length
   const totalAbsent = rows.filter((r) => r.id && !r.isPresent).length
   const total = rows.filter((r) => r.id).length
@@ -623,7 +633,7 @@ export default function MatrixPage() {
         const gB = b.groupIds[0] ? (groups.find(g => g.id === b.groupIds[0])?.name ?? '') : ''
         cmp = gA.localeCompare(gB)
       }
-      else if (col === 'tenure') cmp = toMonths(a.hireDate) - toMonths(b.hireDate)
+      else if (col === 'tenure') cmp = toMonths(hireDateOf(a)) - toMonths(hireDateOf(b))
       // Needs an explicit branch: the fallback below treats any unrecognised column
       // as a station id, which would make this header a silent no-op. Employees with
       // no recorded change sort first ascending, matching the tenure convention above.
@@ -1058,7 +1068,10 @@ export default function MatrixPage() {
                     </td>
 
                     <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-400">
-                      {row.hireDate ? formatTenure(row.hireDate) : <span className="text-gray-200">—</span>}
+                      {(() => {
+                        const hired = hireDateOf(row)
+                        return hired ? formatTenure(hired) : <span className="text-gray-200">—</span>
+                      })()}
                     </td>
 
                     <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-400">
