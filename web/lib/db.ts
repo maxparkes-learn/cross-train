@@ -249,7 +249,17 @@ export async function removeUserFromDepartment(email: string, deptId: string): P
   if (error) throw error
 }
 
-export async function deleteUserProfile(email: string): Promise<void> {
+/**
+ * Revokes a person's access to the app: removes their department assignments and their
+ * profile row, so they can no longer sign in (access is invite-only).
+ *
+ * This does NOT touch the `employees` table. Employees and app users are entirely
+ * separate records — employees have no email column and are never joined to profiles —
+ * so someone's employee entry, competencies and cross-training history all survive this
+ * untouched. Named for what it does, because "delete user profile" reads like erasing
+ * the person.
+ */
+export async function revokeAppAccess(email: string): Promise<void> {
   const db = createClient()
   await db.from('department_users').delete().eq('user_email', email)
   const { error } = await db.from('user_profiles').delete().eq('email', email)

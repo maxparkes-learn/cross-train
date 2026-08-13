@@ -11,7 +11,7 @@ import {
   updateUserRole,
   assignUserToDepartment,
   removeUserFromDepartment,
-  deleteUserProfile,
+  revokeAppAccess,
   bulkInviteManagers,
   fetchSignInCounts,
 } from '@/lib/db'
@@ -257,8 +257,17 @@ export default function UsersPage() {
   }
 
   const handleRemove = async (email: string) => {
-    if (!confirm(`Remove ${email} from the system?`)) return
-    await deleteUserProfile(email)
+    // Spell out the scope: this only revokes app access. The old wording said
+    // "remove from the system", which read as deleting the person entirely and made
+    // the button too frightening to use for its actual purpose.
+    const ok = confirm(
+      `Remove app access for ${email}?\n\n` +
+        `They will no longer be able to sign in, and they will disappear from this list.\n\n` +
+        `Their employee record, competencies and cross-training history are NOT affected — ` +
+        `those are stored separately and stay exactly as they are.`,
+    )
+    if (!ok) return
+    await revokeAppAccess(email)
     setProfiles(prev => prev.filter(p => p.email !== email))
     setDeptAssignments(prev => { const n = { ...prev }; delete n[email]; return n })
   }
@@ -548,7 +557,7 @@ export default function UsersPage() {
                         <button
                           onClick={() => handleRemove(profile.email)}
                           className="text-gray-300 hover:text-red-500 transition-colors"
-                          title="Remove user"
+                          title="Remove app access (does not delete their employee record)"
                         >
                           ✕
                         </button>
