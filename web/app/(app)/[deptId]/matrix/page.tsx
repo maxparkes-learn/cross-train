@@ -774,7 +774,7 @@ export default function MatrixPage() {
       <div className="max-w-xl">
         <h1 className="text-2xl font-bold text-gray-900 mb-2">Cross-Training Matrix</h1>
         <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-700">
-          No stations yet. Add your first station in the sidebar →
+          No stations yet. Add your first station from the Stations menu in the header.
         </div>
       </div>
     )

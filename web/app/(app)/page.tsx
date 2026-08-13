@@ -36,7 +36,7 @@ export default async function RootPage() {
         </h1>
         <p className="text-sm text-gray-500">
           {isAdmin
-            ? 'Create your first department from the sidebar to get started.'
+            ? 'Create your first department from the account menu in the header to get started.'
             : 'Your account is pending department access. Contact max.parkes@clutch.ca to be added.'}
         </p>
         {!isAdmin && (

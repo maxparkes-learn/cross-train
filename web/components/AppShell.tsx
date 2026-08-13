@@ -27,7 +27,7 @@ import {
 } from '@/lib/db'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter, usePathname } from 'next/navigation'
-import Sidebar from './Sidebar'
+import HeaderBar from './chrome/HeaderBar'
 
 interface AppContextValue {
   stations: Station[]
@@ -84,22 +84,6 @@ export default function AppShell({
   const [editDeptIds, setEditDeptIds] = useState<Set<string>>(new Set())
   const [pendingUserCount, setPendingUserCount] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
-  const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-
-  useEffect(() => {
-    const stored = localStorage.getItem('sidebar-collapsed')
-    if (stored === 'true') setSidebarCollapsed(true)
-  }, [])
-
-  const toggleSidebarCollapsed = useCallback(() => {
-    setSidebarCollapsed((prev) => {
-      const next = !prev
-      localStorage.setItem('sidebar-collapsed', String(next))
-      return next
-    })
-  }, [])
-
   const [previewAsManager, setPreviewAsManager] = useState(false)
 
   const isAdmin = userRole === 'admin' || userRole === 'superadmin'
@@ -186,8 +170,6 @@ export default function AppShell({
     ...(effectiveIsAdmin ? [{ href: `/${activeDeptId}/employees`, label: 'Employees', icon: '👤' }] : []),
   ]
 
-  const activeLabel = navItems.find((n) => pathname.startsWith(n.href))?.label ?? 'Rotation & Safety'
-
   return (
     <AppContext.Provider
       value={{
@@ -209,69 +191,50 @@ export default function AppShell({
         applyCompetencyChanges,
       }}
     >
-      <div className="flex h-screen overflow-hidden bg-gray-50">
-        {sidebarOpen && (
-          <div
-            className="fixed inset-0 bg-black/40 z-20 lg:hidden"
-            onClick={() => setSidebarOpen(false)}
-          />
+      {/* Vertical stack now that the chrome is a top bar. <main> stays the scroll
+          container: several pages rely on `sticky left-0` frozen columns inside a
+          fixed-height ancestor, and the matrix's popovers close on a capture-phase
+          scroll listener. Keeping the scroll model identical means none of that needs
+          re-verifying. The header pins by sitting outside the scroller. */}
+      <div className="flex h-screen flex-col overflow-hidden bg-canvas">
+        <HeaderBar
+          navItems={navItems}
+          pathname={pathname}
+          stations={stations}
+          settings={settings}
+          user={user}
+          userRole={effectiveRole}
+          isAdmin={effectiveIsAdmin}
+          departments={departments}
+          activeDepartment={activeDepartment}
+          activeDeptId={activeDeptId}
+          isLoading={isLoading}
+          onSignOut={handleSignOut}
+          onStationsChange={refreshStations}
+          onSettingsChange={setSettings}
+          onDepartmentsChange={refreshDepartments}
+          canTogglePreview={isAdmin}
+          previewAsManager={previewAsManager}
+          onTogglePreview={() => setPreviewAsManager(p => !p)}
+          pendingUserCount={pendingUserCount}
+        />
+
+        {previewAsManager && (
+          <div className="flex shrink-0 items-center gap-3 border-b border-amber-200 bg-amber-50 px-6 py-2 text-sm text-amber-700">
+            <span className="font-medium">Previewing as Manager</span>
+            <span className="text-xs text-amber-500">— view-only access, admin nav hidden</span>
+            <button
+              onClick={() => setPreviewAsManager(false)}
+              className="ml-auto rounded border border-amber-300 px-2 py-0.5 text-xs font-medium text-amber-600 transition-colors hover:bg-amber-100 hover:text-amber-900"
+            >
+              Exit Preview
+            </button>
+          </div>
         )}
 
-        <aside
-          className={`fixed lg:static inset-y-0 left-0 z-30 bg-gray-900 text-white flex flex-col transform transition-all duration-200 ${
-            sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
-          } ${sidebarCollapsed && !sidebarOpen ? 'lg:w-14' : 'w-72'}`}
-        >
-          <Sidebar
-            navItems={navItems}
-            pathname={pathname}
-            stations={stations}
-            settings={settings}
-            user={user}
-            userRole={effectiveRole}
-            departments={departments}
-            activeDepartment={activeDepartment}
-            activeDeptId={activeDeptId}
-            onSignOut={handleSignOut}
-            onStationsChange={refreshStations}
-            onSettingsChange={setSettings}
-            onDepartmentsChange={refreshDepartments}
-            collapsed={sidebarCollapsed && !sidebarOpen}
-            onToggleCollapsed={toggleSidebarCollapsed}
-            canTogglePreview={isAdmin}
-            previewAsManager={previewAsManager}
-            onTogglePreview={() => setPreviewAsManager(p => !p)}
-            pendingUserCount={pendingUserCount}
-          />
-        </aside>
-
-        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-          <div className="lg:hidden flex items-center gap-3 px-4 py-3 bg-white border-b border-gray-200">
-            <button
-              onClick={() => setSidebarOpen(true)}
-              className="p-1 rounded text-gray-600 hover:text-gray-900"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-              </svg>
-            </button>
-            <span className="font-semibold text-gray-900 text-sm">{activeLabel}</span>
-          </div>
-
-          {previewAsManager && (
-            <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center gap-3 text-sm text-amber-700 shrink-0">
-              <span className="font-medium">Previewing as Manager</span>
-              <span className="text-amber-500 text-xs">— view-only access, admin nav hidden</span>
-              <button
-                onClick={() => setPreviewAsManager(false)}
-                className="ml-auto text-xs font-medium text-amber-600 hover:text-amber-900 border border-amber-300 rounded px-2 py-0.5 hover:bg-amber-100 transition-colors"
-              >
-                Exit Preview
-              </button>
-            </div>
-          )}
-          <main className="flex-1 overflow-y-auto p-6">{children}</main>
-        </div>
+        {/* The handoff specs `0 24px`, but every page renders its own <h1> as its first
+            child, so zero top padding collides each title with the plum bar. */}
+        <main className="flex-1 overflow-y-auto px-6 py-5">{children}</main>
       </div>
     </AppContext.Provider>
   )

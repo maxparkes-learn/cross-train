@@ -3,11 +3,11 @@
 @tailwind utilities;
 
 :root {
-  --sidebar-width: 280px;
+  --header-h: 56px;
 }
 
 body {
-  @apply bg-gray-50 text-gray-900 antialiased;
+  @apply bg-canvas text-ink antialiased;
 }
 
 /* Scrollbar styling */

@@ -8,3 +8,6 @@ data/current_data.json
 !.streamlit/config.toml
 .claude/
 .vercel
+
+# Design handoff artifacts (kept locally, not source)
+*.zip
