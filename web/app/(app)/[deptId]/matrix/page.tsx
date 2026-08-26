@@ -347,7 +347,7 @@ function GroupCell({ row, rowIndex, groups, onToggleGroup, onSaveGroups, readOnl
   const assignedGroups = groups.filter(g => row.groupIds.includes(g.id))
 
   return (
-    <div ref={cellRef} className="px-2 py-1.5 min-w-[140px]">
+    <div ref={cellRef} className="px-2 py-1.5">
       <div onClick={readOnly ? undefined : openPopover} className={`flex flex-wrap gap-1 min-h-[26px] rounded p-0.5 transition-colors ${readOnly ? '' : 'cursor-pointer hover:bg-gray-50'}`}>
         {assignedGroups.length === 0
           ? <span className="text-gray-300 text-xs self-center pl-0.5">—</span>
@@ -642,6 +642,27 @@ export default function MatrixPage() {
       return matrixSort.dir === 'asc' ? cmp : -cmp
     })
 
+  // Every department's matrix must render identically. With the default table-auto
+  // layout the browser sized each column from its content, so Parts-AM's long
+  // "Extra jobs / Credit Invoices upload" station took 374px next to 178px
+  // neighbours, Body's two stations stretched to 372px each, and narrow windows
+  // squeezed the level labels until they clipped. table-fixed plus these widths
+  // removes all three. Derived from the same visibility predicate that decides
+  // which cells render, so the two cannot desync.
+  const STATION_COL_W = 170
+  const cols: number[] = [
+    28, // drag handle
+    ...(hiddenColumns.has('present') ? [] : [52]),
+    200, // employee
+    110, // tenure
+    105, // last update
+    ...(hiddenColumns.has('certification') ? [] : [145]),
+    ...(hiddenColumns.has('group') ? [] : [175]),
+    ...localStations.filter((s) => !hiddenColumns.has(s.id)).map(() => STATION_COL_W),
+    36, // delete
+  ]
+  const tableWidth = cols.reduce((a, b) => a + b, 0)
+
   const scheduleSave = useCallback(
     (rowId: string, updatedRow: Row) => {
       if (saveTimers.current[rowId]) clearTimeout(saveTimers.current[rowId])
@@ -872,7 +893,12 @@ export default function MatrixPage() {
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm border-collapse">
+          <table className="text-sm border-collapse table-fixed" style={{ width: tableWidth }}>
+            <colgroup>
+              {cols.map((w, i) => (
+                <col key={i} style={{ width: w }} />
+              ))}
+            </colgroup>
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
                 <th className="w-6" />
@@ -898,7 +924,7 @@ export default function MatrixPage() {
                 )}
 
                 {/* Employee */}
-                <th className="px-3 py-2.5 text-left font-medium text-gray-600 min-w-[140px]">
+                <th className="px-3 py-2.5 text-left font-medium text-gray-600">
                   <span className="inline-flex items-center gap-0.5">
                     <button onClick={() => toggleMatrixSort('name')} className="hover:text-gray-900 transition-colors">
                       Employee{sortInd('name')}
@@ -927,7 +953,7 @@ export default function MatrixPage() {
 
                 {/* Certification */}
                 {!hiddenColumns.has('certification') && (
-                  <th className="px-3 py-2.5 text-left font-medium text-gray-600 whitespace-nowrap min-w-[130px]">
+                  <th className="px-3 py-2.5 text-left font-medium text-gray-600 whitespace-nowrap">
                     <span className="inline-flex items-center gap-0.5">
                       <button onClick={() => toggleMatrixSort('certification')} className="hover:text-gray-900 transition-colors">
                         Certification{sortInd('certification')}
@@ -944,7 +970,7 @@ export default function MatrixPage() {
 
                 {/* Group */}
                 {!hiddenColumns.has('group') && (
-                  <th className="px-3 py-2.5 text-left font-medium text-gray-600 min-w-[140px]">
+                  <th className="px-3 py-2.5 text-left font-medium text-gray-600">
                     <span className="inline-flex items-center gap-0.5">
                       <button onClick={() => toggleMatrixSort('group')} className="hover:text-gray-900 transition-colors">
                         Group{sortInd('group')}
@@ -966,7 +992,7 @@ export default function MatrixPage() {
                     onDragOver={hasEditAccess ? (e) => handleStnDragOver(e, i) : undefined}
                     onDrop={hasEditAccess ? () => handleStnDrop(i) : undefined}
                     onDragEnd={hasEditAccess ? () => { isDraggingStn.current = false; setDragStnIdx(null); setDragOverStnIdx(null) } : undefined}
-                    className={`px-3 py-2.5 text-center font-medium text-gray-600 whitespace-nowrap min-w-[110px] select-none ${
+                    className={`px-2 py-2.5 text-center font-medium text-gray-600 leading-tight select-none ${
                       hasEditAccess ? 'cursor-grab active:cursor-grabbing' : ''
                     } ${dragOverStnIdx === i && dragStnIdx !== i ? 'border-l-2 border-l-indigo-400' : ''
                     }`}
@@ -1067,14 +1093,14 @@ export default function MatrixPage() {
                       </div>
                     </td>
 
-                    <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-400">
+                    <td className="px-3 py-2 whitespace-nowrap overflow-hidden text-ellipsis text-xs text-gray-400">
                       {(() => {
                         const hired = hireDateOf(row)
                         return hired ? formatTenure(hired) : <span className="text-gray-200">—</span>
                       })()}
                     </td>
 
-                    <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-400">
+                    <td className="px-3 py-2 whitespace-nowrap overflow-hidden text-ellipsis text-xs text-gray-400">
                       <LastUpdatedCell info={lastUpdatedInfo(row.id)} />
                     </td>
 
@@ -1153,13 +1179,7 @@ export default function MatrixPage() {
 
               {hasEditAccess && (
                 <tr>
-                  <td colSpan={
-                    5 // drag handle + employee + tenure + last update + delete
-                    + (hiddenColumns.has('present') ? 0 : 1)
-                    + (hiddenColumns.has('certification') ? 0 : 1)
-                    + (hiddenColumns.has('group') ? 0 : 1)
-                    + localStations.filter(s => !hiddenColumns.has(s.id)).length
-                  } className="px-3 py-2">
+                  <td colSpan={cols.length} className="px-3 py-2">
                     <button onClick={addRow} className="text-sm text-indigo-600 hover:text-indigo-700 font-medium transition-colors">
                       + Add Employee
                     </button>
