@@ -652,7 +652,9 @@ export default function MatrixPage() {
   const STATION_COL_W = 170
   const cols: number[] = [
     28, // drag handle
-    ...(hiddenColumns.has('present') ? [] : [52]),
+    // 92, not the handoff's 44: unlike the design's bare checkbox, this header
+    // carries the word "Present" plus its sort and filter controls, which need 89px.
+    ...(hiddenColumns.has('present') ? [] : [92]),
     200, // employee
     110, // tenure
     105, // last update
